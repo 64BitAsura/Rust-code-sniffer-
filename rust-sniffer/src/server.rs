@@ -21,7 +21,7 @@ use crate::meta::IndexMeta;
 use crate::symbols::FileSymbols;
 
 /// Embedded web-UI HTML, compiled directly into the binary.
-static UI_HTML: &str = include_str!("assets/ui.html");
+static UI_HTML: &str = include_str!("embedded/ui.html");
 
 // ─── Shared application state ──────────────────────────────────────────────
 
