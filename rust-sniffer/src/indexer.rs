@@ -10,6 +10,7 @@ use crate::error::SnifferError;
 use crate::incremental::{
     diff_files, fingerprint, load_cached_symbols, save_symbols, HashState,
 };
+use crate::meta::IndexMeta;
 use crate::parser::parse_file;
 use crate::symbols::FileSymbols;
 
@@ -149,6 +150,12 @@ pub fn run_index(opts: &IndexOptions) -> Result<(Vec<FileSymbols>, IndexSummary)
     }
 
     let total_symbols = results.iter().map(|fs| fs.symbols.len()).sum();
+
+    // ── 9. Always write meta.json so status / serve have fresh stats ──────────
+    let root_str = opts.root.to_string_lossy().into_owned();
+    let meta = IndexMeta::new(root_str, total_files, total_symbols);
+    // Best-effort: a metadata write failure is not fatal.
+    let _ = meta.save(&opts.index_dir);
 
     let summary = IndexSummary {
         total_files,

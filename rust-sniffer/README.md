@@ -1,6 +1,6 @@
 # rust-sniffer
 
-A fast, tree-sitter–based Rust source-code indexer written in Rust, with **incremental re-indexing** support.
+A fast, tree-sitter–based Rust source-code indexer written in Rust, with **incremental re-indexing** support and an embedded **Symbol Explorer web UI**.
 
 ## Features
 
@@ -8,6 +8,9 @@ A fast, tree-sitter–based Rust source-code indexer written in Rust, with **inc
 - **Rich metadata** — visibility (`public` / `restricted` / `private`), line ranges, return types, field types, and `is_async` flag.
 - **Incremental indexing** — SHA-256 fingerprints (16-char prefix) are persisted in `.rust-sniffer/hashes.json`; on subsequent runs only changed files are re-parsed.
 - **JSON output** — every indexed file emits structured JSON suitable for further tooling.
+- **`status`** — inspect the index at a glance: file count, symbol count, and when it was last built.
+- **`clean`** — safely delete the index directory with a `--force` guard.
+- **`serve`** — start a local HTTP server that exposes a REST API and a built-in Symbol Explorer web UI (no separate install needed).
 
 ## Installation
 
@@ -80,6 +83,83 @@ Or, if a file was modified:
   M  src/lib.rs
 ```
 
+### Status — inspect the current index
+
+```bash
+rust-sniffer status [--index-dir <DIR>]
+```
+
+```
+Index directory:  .rust-sniffer
+Root:             /home/user/my-project
+Indexed at:       2024-03-15T10:30:00+00:00
+Files indexed:    42
+Total symbols:    1,234
+```
+
+If no index exists yet:
+
+```
+No index found at '.rust-sniffer'.
+Run:  rust-sniffer index --incremental
+```
+
+### Clean — delete the index
+
+```bash
+rust-sniffer clean [--index-dir <DIR>] [--force]
+```
+
+Without `--force`, shows what would be deleted:
+
+```
+This will delete the index at '.rust-sniffer'.
+Run with --force to confirm deletion.
+```
+
+With `--force`:
+
+```
+Deleted '.rust-sniffer'.
+```
+
+### Serve — Symbol Explorer web UI + REST API
+
+```bash
+rust-sniffer serve [OPTIONS]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--index-dir <DIR>` | `.rust-sniffer` | Where the index is stored |
+| `--port <PORT>` | `3741` | TCP port to listen on |
+| `--host <HOST>` | `localhost` | Bind address |
+
+```
+rust-sniffer serve  listening on  http://localhost:3741
+  GET /            — Symbol Explorer web UI
+  GET /api/status  — index metadata (JSON)
+  GET /api/symbols — symbol list (JSON)
+```
+
+Open `http://localhost:3741` in a browser to browse all indexed symbols, filter by kind, and inspect per-symbol metadata (return type, field type, line range, `async` flag, etc.).
+
+**Tip:** run `index --incremental` first, then `serve` to explore the results interactively.
+
+```bash
+rust-sniffer index . --incremental
+rust-sniffer serve
+```
+
+#### REST API
+
+Both endpoints return JSON and support cross-origin requests (CORS `*`).
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /api/status` | Index metadata: `indexed_at`, `root`, `file_count`, `symbol_count` |
+| `GET /api/symbols` | Full array of `FileSymbols` objects (same schema as `index` JSON output) |
+
 ## Output format
 
 Each element in the top-level JSON array corresponds to one file:
@@ -145,6 +225,11 @@ On each `index --incremental` run:
 
 This mirrors the strategy used by the GitNexus TypeScript pipeline
 (`RepoMeta.fileHashes` + `diffFileHashes()`), re-implemented natively in Rust.
+
+After each successful `index` run a `meta.json` file is also written to the
+index directory — it records the root path, indexed-at timestamp, file count,
+and symbol count. The `status` and `serve` commands read this file to avoid
+having to re-scan the project just to report statistics.
 
 ## Development
 
