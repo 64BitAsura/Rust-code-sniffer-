@@ -96,3 +96,8 @@ GitNexus.sln
 .swarm/
 
 local_docs/
+# Rust build artifacts
+rust-sniffer/target/
+
+# rust-sniffer incremental index state
+.rust-sniffer/
