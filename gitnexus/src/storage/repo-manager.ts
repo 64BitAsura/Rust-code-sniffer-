@@ -14,6 +14,13 @@ export interface RepoMeta {
   repoPath: string;
   lastCommit: string;
   indexedAt: string;
+  /**
+   * SHA-256 (first 16 hex chars) fingerprints of all indexed source files,
+   * keyed by repo-relative path.  Used for incremental change detection so
+   * non-git repos (and repos with uncommitted edits) skip a full re-analysis
+   * when nothing has changed.
+   */
+  fileHashes?: Record<string, string>;
   stats?: {
     files?: number;
     nodes?: number;

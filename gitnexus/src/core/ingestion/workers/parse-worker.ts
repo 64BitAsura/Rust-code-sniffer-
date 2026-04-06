@@ -817,7 +817,8 @@ const EXPRESS_ROUTE_METHODS = new Set([
 // function is captured separately by the route.fetch query.
 const HTTP_CLIENT_ONLY_METHODS = new Set(['head', 'options', 'request', 'ajax']);
 
-// Decorator names that indicate HTTP route handlers (NestJS, Flask, FastAPI, Spring)
+// Decorator names that indicate HTTP route handlers
+// Covers: NestJS, Flask, FastAPI, Spring (Java), actix-web (Rust), rocket (Rust)
 const ROUTE_DECORATOR_NAMES = new Set([
   'Get',
   'Post',
@@ -830,6 +831,8 @@ const ROUTE_DECORATOR_NAMES = new Set([
   'put',
   'delete',
   'patch',
+  'head',
+  'options',
   'route',
   'RequestMapping',
   'GetMapping',
@@ -1464,7 +1467,9 @@ const processFileGroup = (
         if (ROUTE_DECORATOR_NAMES.has(decoratorName)) {
           const routePath = decoratorArg || '';
           const method = decoratorName.replace('Mapping', '').toUpperCase();
-          const httpMethod = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'].includes(method)
+          const httpMethod = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'HEAD', 'OPTIONS'].includes(
+            method,
+          )
             ? method
             : 'GET';
           result.decoratorRoutes.push({

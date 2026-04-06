@@ -486,6 +486,16 @@ export interface PipelineOptions {
   skipGraphPhases?: boolean;
   /** Force sequential parsing (no worker pool). Useful for testing the sequential path. */
   skipWorkers?: boolean;
+  /**
+   * When provided, only the listed repo-relative file paths will be parsed.
+   * All other source files are skipped in the parse/extract phase.
+   * Structure nodes (File, Folder) are still created for every path.
+   *
+   * Note: import/call resolution still operates on the full graph, so callers
+   * should only pass this set when the excluded files' extracted data is
+   * available from a prior index (e.g. incremental re-analysis).
+   */
+  changedFiles?: ReadonlySet<string>;
 }
 
 // ── Extracted pipeline phases ──────────────────────────────────────────────

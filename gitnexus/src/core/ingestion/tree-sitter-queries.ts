@@ -685,6 +685,24 @@ export const RUST_QUERIES = `
     value: (_) @assignment.receiver
     field: (field_identifier) @assignment.property)
   right: (_)) @assignment
+
+; Rust attribute decorators with a string argument — actix-web / rocket route handlers
+; e.g. #[get("/users")], #[post("/items")], #[route("/")]
+(attribute_item
+  (attribute
+    (identifier) @decorator.name
+    arguments: (token_tree
+      (string_literal
+        (string_content) @decorator.arg)))) @decorator
+
+; Scoped attribute with a string argument — e.g. #[actix_web::get("/users")]
+(attribute_item
+  (attribute
+    (scoped_identifier
+      name: (identifier) @decorator.name)
+    arguments: (token_tree
+      (string_literal
+        (string_content) @decorator.arg)))) @decorator
 `;
 
 // PHP queries - works with tree-sitter-php (php_only grammar)

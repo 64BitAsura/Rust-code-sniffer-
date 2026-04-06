@@ -32,6 +32,8 @@ import {
 } from '../storage/repo-manager.js';
 import { getCurrentCommit, hasGitDir } from '../storage/git.js';
 import { generateAIContextFiles } from '../cli/ai-context.js';
+import { walkRepositoryPaths } from './ingestion/filesystem-walker.js';
+import { computeFileHashes, diffFileHashes } from './ingestion/file-hasher.js';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -122,15 +124,39 @@ export async function runFullAnalysis(
   const existingMeta = await loadMeta(storagePath);
 
   // ── Early-return: already up to date ──────────────────────────────
-  if (existingMeta && !options.force && existingMeta.lastCommit === currentCommit) {
-    // Non-git folders have currentCommit = '' — always rebuild since we can't detect changes
-    if (currentCommit !== '') {
+  if (existingMeta && !options.force) {
+    // Commit-based fast path for git repos where HEAD hasn't moved.
+    if (currentCommit !== '' && existingMeta.lastCommit === currentCommit) {
       return {
         repoName: path.basename(repoPath),
         repoPath,
         stats: existingMeta.stats ?? {},
         alreadyUpToDate: true,
       };
+    }
+
+    // Hash-based fast path — covers non-git repos and git repos with
+    // uncommitted edits that haven't advanced HEAD.
+    if (existingMeta.fileHashes) {
+      try {
+        progress('extracting', 0, 'Checking for changes...');
+        const scanned = await walkRepositoryPaths(repoPath);
+        const currentHashes = await computeFileHashes(
+          repoPath,
+          scanned.map((f) => f.path),
+        );
+        const changedFiles = diffFileHashes(existingMeta.fileHashes, currentHashes);
+        if (changedFiles === null) {
+          return {
+            repoName: path.basename(repoPath),
+            repoPath,
+            stats: existingMeta.stats ?? {},
+            alreadyUpToDate: true,
+          };
+        }
+      } catch {
+        // Hash computation failed — fall through to full re-analysis
+      }
     }
   }
 
@@ -279,10 +305,25 @@ export async function runFullAnalysis(
       /* table may not exist if embeddings never ran */
     }
 
+    // ── Compute file hashes for incremental indexing ──────────────────
+    // Hashes are stored in meta so the next `analyze` run can skip a full
+    // rebuild when no source files changed (even in non-git repos).
+    let fileHashes: Record<string, string> | undefined;
+    try {
+      const scanned = await walkRepositoryPaths(repoPath);
+      fileHashes = await computeFileHashes(
+        repoPath,
+        scanned.map((f) => f.path),
+      );
+    } catch {
+      // Hash computation is best-effort — failure does not block the index
+    }
+
     const meta = {
       repoPath,
       lastCommit: currentCommit,
       indexedAt: new Date().toISOString(),
+      ...(fileHashes ? { fileHashes } : {}),
       stats: {
         files: pipelineResult.totalFileCount,
         nodes: stats.nodes,
