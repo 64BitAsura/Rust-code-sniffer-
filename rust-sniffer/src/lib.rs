@@ -29,5 +29,7 @@
 pub mod error;
 pub mod incremental;
 pub mod indexer;
+pub mod meta;
 pub mod parser;
+pub mod server;
 pub mod symbols;

@@ -1,0 +1,452 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>rust-sniffer — Symbol Explorer</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0d1117;
+      --surface: #161b22;
+      --surface2: #21262d;
+      --border: #30363d;
+      --text: #c9d1d9;
+      --muted: #8b949e;
+      --accent: #58a6ff;
+      --tag-fn: #3fb950;
+      --tag-struct: #d2a8ff;
+      --tag-enum: #ffa657;
+      --tag-trait: #79c0ff;
+      --tag-impl: #8b949e;
+      --tag-mod: #f0883e;
+      --tag-other: #6e7681;
+      --danger: #f85149;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ── Header ── */
+    header {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 12px 20px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+    header h1 { font-size: 18px; font-weight: 600; }
+    header h1 span { color: var(--accent); }
+    #status-badge {
+      margin-left: auto;
+      font-size: 12px;
+      padding: 3px 10px;
+      border-radius: 20px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      color: var(--muted);
+    }
+    #status-badge.ok { border-color: var(--tag-fn); color: var(--tag-fn); }
+    #status-badge.empty { border-color: var(--danger); color: var(--danger); }
+
+    /* ── Stats bar ── */
+    #stats {
+      background: var(--surface2);
+      border-bottom: 1px solid var(--border);
+      padding: 8px 20px;
+      display: flex;
+      gap: 24px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    #stats b { color: var(--text); }
+
+    /* ── Controls ── */
+    #controls {
+      padding: 12px 20px;
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      align-items: center;
+      border-bottom: 1px solid var(--border);
+    }
+    #search {
+      flex: 1;
+      min-width: 220px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 7px 12px;
+      color: var(--text);
+      font-size: 13px;
+      outline: none;
+    }
+    #search:focus { border-color: var(--accent); }
+
+    .kind-btn {
+      padding: 4px 12px;
+      border-radius: 20px;
+      border: 1px solid var(--border);
+      background: transparent;
+      color: var(--muted);
+      font-size: 12px;
+      cursor: pointer;
+      transition: all .15s;
+    }
+    .kind-btn:hover, .kind-btn.active { background: var(--surface2); color: var(--text); }
+    .kind-btn[data-kind="function"].active { border-color: var(--tag-fn); color: var(--tag-fn); }
+    .kind-btn[data-kind="struct"].active { border-color: var(--tag-struct); color: var(--tag-struct); }
+    .kind-btn[data-kind="enum"].active { border-color: var(--tag-enum); color: var(--tag-enum); }
+    .kind-btn[data-kind="trait"].active { border-color: var(--tag-trait); color: var(--tag-trait); }
+    .kind-btn[data-kind="impl"].active, .kind-btn[data-kind="trait_impl"].active { border-color: var(--tag-impl); color: var(--tag-impl); }
+    .kind-btn[data-kind="module"].active { border-color: var(--tag-mod); color: var(--tag-mod); }
+
+    /* ── Main layout ── */
+    #main {
+      flex: 1;
+      display: flex;
+      overflow: hidden;
+    }
+
+    /* ── Symbol list ── */
+    #list {
+      width: 340px;
+      min-width: 240px;
+      overflow-y: auto;
+      border-right: 1px solid var(--border);
+    }
+    .file-group { }
+    .file-header {
+      padding: 6px 16px;
+      font-size: 11px;
+      color: var(--muted);
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .sym-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 7px 16px;
+      cursor: pointer;
+      border-bottom: 1px solid transparent;
+      transition: background .1s;
+    }
+    .sym-row:hover { background: var(--surface2); }
+    .sym-row.selected { background: var(--surface2); border-bottom-color: var(--border); }
+
+    .kind-tag {
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: .5px;
+      padding: 2px 5px;
+      border-radius: 3px;
+      min-width: 48px;
+      text-align: center;
+      text-transform: uppercase;
+    }
+    .kt-function { background: #1a3a25; color: var(--tag-fn); }
+    .kt-struct { background: #2d1f47; color: var(--tag-struct); }
+    .kt-enum { background: #3b2a10; color: var(--tag-enum); }
+    .kt-trait { background: #1a2d47; color: var(--tag-trait); }
+    .kt-impl, .kt-trait_impl { background: #1e2530; color: var(--tag-impl); }
+    .kt-module { background: #3b2210; color: var(--tag-mod); }
+    .kt-other { background: #1e2530; color: var(--tag-other); }
+
+    .sym-name {
+      font-size: 13px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .sym-vis {
+      margin-left: auto;
+      font-size: 10px;
+      color: var(--muted);
+    }
+
+    /* ── Detail panel ── */
+    #detail {
+      flex: 1;
+      padding: 24px;
+      overflow-y: auto;
+    }
+    #detail .placeholder {
+      color: var(--muted);
+      font-size: 14px;
+      margin-top: 40px;
+      text-align: center;
+    }
+    #detail h2 { font-size: 22px; margin-bottom: 16px; }
+    #detail h2 .async-badge {
+      font-size: 11px;
+      background: #1a2d47;
+      color: var(--accent);
+      padding: 2px 8px;
+      border-radius: 4px;
+      vertical-align: middle;
+      margin-left: 8px;
+    }
+    .detail-meta { display: flex; flex-direction: column; gap: 8px; }
+    .detail-row { display: flex; gap: 12px; font-size: 13px; }
+    .detail-label { color: var(--muted); min-width: 100px; }
+    .detail-value { color: var(--text); font-family: "SFMono-Regular", Consolas, monospace; }
+    .detail-value.path { font-size: 12px; color: var(--muted); }
+
+    /* ── Loading / error ── */
+    #loading {
+      position: fixed; inset: 0;
+      background: rgba(13,17,23,.85);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 14px; color: var(--muted);
+      z-index: 100;
+    }
+    #loading.hidden { display: none; }
+
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  </style>
+</head>
+<body>
+
+<div id="loading">Loading index…</div>
+
+<header>
+  <h1>rust-<span>sniffer</span></h1>
+  <div id="status-badge">—</div>
+</header>
+
+<div id="stats">
+  <span>Files: <b id="s-files">—</b></span>
+  <span>Symbols: <b id="s-symbols">—</b></span>
+  <span>Indexed: <b id="s-indexed">—</b></span>
+  <span>Root: <b id="s-root" title="">—</b></span>
+</div>
+
+<div id="controls">
+  <input id="search" type="search" placeholder="Filter by name…" autocomplete="off" />
+  <button class="kind-btn active" data-kind="all">All</button>
+  <button class="kind-btn" data-kind="function">fn</button>
+  <button class="kind-btn" data-kind="struct">struct</button>
+  <button class="kind-btn" data-kind="enum">enum</button>
+  <button class="kind-btn" data-kind="trait">trait</button>
+  <button class="kind-btn" data-kind="impl">impl</button>
+  <button class="kind-btn" data-kind="trait_impl">trait impl</button>
+  <button class="kind-btn" data-kind="module">mod</button>
+</div>
+
+<div id="main">
+  <div id="list"></div>
+  <div id="detail"><p class="placeholder">Select a symbol to view details.</p></div>
+</div>
+
+<script>
+  // ── state ──
+  let allSymbols = []; // [{file, symbol}]
+  let activeKind = 'all';
+  let searchQ = '';
+  let selected = null;
+
+  // ── fetch data ──
+  async function loadData() {
+    try {
+      const [statusRes, symbolsRes] = await Promise.all([
+        fetch('/api/status'),
+        fetch('/api/symbols'),
+      ]);
+
+      const status = await statusRes.json();
+      const files = await symbolsRes.json();
+
+      // populate stats bar
+      document.getElementById('s-files').textContent = status.file_count ?? '—';
+      document.getElementById('s-symbols').textContent = status.symbol_count ?? '—';
+      document.getElementById('s-indexed').textContent = status.indexed_at
+        ? new Date(status.indexed_at).toLocaleString() : '—';
+      const root = status.root ?? '—';
+      const rootEl = document.getElementById('s-root');
+      rootEl.textContent = root.length > 50 ? '…' + root.slice(-47) : root;
+      rootEl.title = root;
+
+      const badge = document.getElementById('status-badge');
+      if (files.length > 0) {
+        badge.textContent = '✅ indexed';
+        badge.className = 'ok';
+      } else {
+        badge.textContent = '⚠ not indexed';
+        badge.className = 'empty';
+      }
+
+      // flatten symbols
+      allSymbols = files.flatMap(f =>
+        f.symbols.map(s => ({ file: f.path, symbol: s }))
+      );
+
+      render();
+    } catch (e) {
+      document.getElementById('status-badge').textContent = '⛔ error';
+      document.getElementById('status-badge').className = 'empty';
+      console.error(e);
+    } finally {
+      document.getElementById('loading').classList.add('hidden');
+    }
+  }
+
+  // ── filtering ──
+  function filtered() {
+    return allSymbols.filter(({ symbol }) => {
+      if (activeKind !== 'all' && symbol.kind !== activeKind) return false;
+      if (searchQ && !symbol.name.toLowerCase().includes(searchQ)) return false;
+      return true;
+    });
+  }
+
+  // ── render list ──
+  function render() {
+    const list = document.getElementById('list');
+    const items = filtered();
+
+    if (items.length === 0) {
+      list.innerHTML = '<p style="padding:24px;color:var(--muted);font-size:13px;">No symbols match.</p>';
+      return;
+    }
+
+    // group by file
+    const byFile = new Map();
+    for (const item of items) {
+      if (!byFile.has(item.file)) byFile.set(item.file, []);
+      byFile.get(item.file).push(item);
+    }
+
+    const frag = document.createDocumentFragment();
+    for (const [file, syms] of byFile) {
+      const group = document.createElement('div');
+      group.className = 'file-group';
+
+      const header = document.createElement('div');
+      header.className = 'file-header';
+      header.textContent = file;
+      header.title = file;
+      group.appendChild(header);
+
+      for (const item of syms) {
+        const row = document.createElement('div');
+        row.className = 'sym-row' + (selected === item ? ' selected' : '');
+        row.innerHTML = `
+          <span class="kind-tag kt-${item.symbol.kind}">${kindLabel(item.symbol.kind)}</span>
+          <span class="sym-name">${escHtml(item.symbol.name)}</span>
+          <span class="sym-vis">${visLabel(item.symbol.visibility)}</span>
+        `;
+        row.addEventListener('click', () => selectSymbol(item, row));
+        group.appendChild(row);
+      }
+
+      frag.appendChild(group);
+    }
+
+    list.innerHTML = '';
+    list.appendChild(frag);
+  }
+
+  // ── detail panel ──
+  function selectSymbol(item, row) {
+    document.querySelectorAll('.sym-row.selected').forEach(el => el.classList.remove('selected'));
+    row.classList.add('selected');
+    selected = item;
+
+    const s = item.symbol;
+    const detail = document.getElementById('detail');
+    detail.innerHTML = `
+      <h2>
+        ${escHtml(s.name)}
+        ${s.is_async ? '<span class="async-badge">async</span>' : ''}
+      </h2>
+      <div class="detail-meta">
+        <div class="detail-row">
+          <span class="detail-label">Kind</span>
+          <span class="detail-value"><span class="kind-tag kt-${s.kind}">${kindLabel(s.kind)}</span></span>
+        </div>
+        <div class="detail-row">
+          <span class="detail-label">Visibility</span>
+          <span class="detail-value">${s.visibility}</span>
+        </div>
+        <div class="detail-row">
+          <span class="detail-label">Lines</span>
+          <span class="detail-value">${s.start_line}–${s.end_line}</span>
+        </div>
+        ${s.return_type ? `
+        <div class="detail-row">
+          <span class="detail-label">Return type</span>
+          <span class="detail-value">${escHtml(s.return_type)}</span>
+        </div>` : ''}
+        ${s.trait_name ? `
+        <div class="detail-row">
+          <span class="detail-label">Trait</span>
+          <span class="detail-value">${escHtml(s.trait_name)}</span>
+        </div>` : ''}
+        ${s.field_type ? `
+        <div class="detail-row">
+          <span class="detail-label">Field type</span>
+          <span class="detail-value">${escHtml(s.field_type)}</span>
+        </div>` : ''}
+        <div class="detail-row">
+          <span class="detail-label">File</span>
+          <span class="detail-value path">${escHtml(item.file)}</span>
+        </div>
+      </div>
+    `;
+  }
+
+  // ── helpers ──
+  function kindLabel(k) {
+    const map = {
+      function: 'fn', struct: 'struct', enum: 'enum', trait: 'trait',
+      impl: 'impl', trait_impl: 'impl T', module: 'mod',
+      type_alias: 'type', constant: 'const', static: 'static',
+      macro: 'macro!', field: 'field',
+    };
+    return map[k] || k;
+  }
+  function visLabel(v) {
+    return v === 'public' ? 'pub' : v === 'restricted' ? 'pub(*)'  : '';
+  }
+  function escHtml(s) {
+    if (!s) return '';
+    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
+  // ── event wiring ──
+  document.getElementById('search').addEventListener('input', e => {
+    searchQ = e.target.value.trim().toLowerCase();
+    render();
+  });
+
+  document.querySelectorAll('.kind-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.kind-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      activeKind = btn.dataset.kind;
+      render();
+    });
+  });
+
+  // ── boot ──
+  loadData();
+</script>
+</body>
+</html>

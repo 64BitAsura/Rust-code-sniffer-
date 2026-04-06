@@ -3,8 +3,11 @@
 //! ## Commands
 //!
 //! ```text
-//! rust-sniffer index [OPTIONS] [ROOT]
-//! rust-sniffer diff  [OPTIONS] [ROOT]
+//! rust-sniffer index  [OPTIONS] [ROOT]   — Index a Rust project
+//! rust-sniffer diff   [OPTIONS] [ROOT]   — Preview incremental changes
+//! rust-sniffer status [OPTIONS]          — Show index status
+//! rust-sniffer clean  [OPTIONS]          — Delete the index
+//! rust-sniffer serve  [OPTIONS]          — Start the web UI + REST API server
 //! ```
 
 use std::path::PathBuf;
@@ -31,7 +34,7 @@ enum Commands {
         root: PathBuf,
 
         /// Directory where the index state is stored.
-        #[arg(short, long, default_value = ".rust-sniffer")]
+        #[arg(long, default_value = ".rust-sniffer")]
         index_dir: PathBuf,
 
         /// Only re-parse files whose content has changed since the last run.
@@ -54,8 +57,41 @@ enum Commands {
         root: PathBuf,
 
         /// Directory where the index state is stored.
-        #[arg(short, long, default_value = ".rust-sniffer")]
+        #[arg(long, default_value = ".rust-sniffer")]
         index_dir: PathBuf,
+    },
+
+    /// Show the current index status (file count, symbol count, last indexed time).
+    Status {
+        /// Directory where the index state is stored.
+        #[arg(long, default_value = ".rust-sniffer")]
+        index_dir: PathBuf,
+    },
+
+    /// Delete the index directory.
+    Clean {
+        /// Directory where the index state is stored.
+        #[arg(long, default_value = ".rust-sniffer")]
+        index_dir: PathBuf,
+
+        /// Skip the confirmation prompt and delete immediately.
+        #[arg(short, long, default_value_t = false)]
+        force: bool,
+    },
+
+    /// Start the Symbol Explorer web UI and REST API server.
+    Serve {
+        /// Directory where the index state is stored.
+        #[arg(long, default_value = ".rust-sniffer")]
+        index_dir: PathBuf,
+
+        /// Port to listen on.
+        #[arg(short, long, default_value_t = 3741)]
+        port: u16,
+
+        /// Host address to bind.
+        #[arg(long, default_value = "localhost")]
+        host: String,
     },
 }
 
@@ -157,6 +193,66 @@ fn main() {
                 for path in &diff.changed {
                     println!("  M  {}", path.display());
                 }
+            }
+        }
+
+        Commands::Status { index_dir } => {
+            use rust_sniffer::meta::IndexMeta;
+
+            match IndexMeta::load(index_dir) {
+                Some(meta) => {
+                    println!("Index directory:  {}", index_dir.display());
+                    println!("Root:             {}", meta.root);
+                    println!("Indexed at:       {}", meta.indexed_at);
+                    println!("Files indexed:    {}", meta.file_count);
+                    println!("Total symbols:    {}", meta.symbol_count);
+                }
+                None => {
+                    println!("No index found at '{}'.", index_dir.display());
+                    println!("Run:  rust-sniffer index --incremental");
+                }
+            }
+        }
+
+        Commands::Clean { index_dir, force } => {
+            if !index_dir.exists() {
+                println!("No index found at '{}'.", index_dir.display());
+                return;
+            }
+
+            if !force {
+                println!(
+                    "This will delete the index at '{}'.",
+                    index_dir.display()
+                );
+                println!("Run with --force to confirm deletion.");
+                return;
+            }
+
+            match std::fs::remove_dir_all(index_dir) {
+                Ok(()) => println!("Deleted '{}'.", index_dir.display()),
+                Err(e) => {
+                    eprintln!("error: failed to delete '{}' — {e}", index_dir.display());
+                    process::exit(1);
+                }
+            }
+        }
+
+        Commands::Serve {
+            index_dir,
+            port,
+            host,
+        } => {
+            use rust_sniffer::server::run_server;
+
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .expect("failed to build Tokio runtime");
+
+            if let Err(e) = rt.block_on(run_server(index_dir, host, *port)) {
+                eprintln!("error: {e}");
+                process::exit(1);
             }
         }
     }
