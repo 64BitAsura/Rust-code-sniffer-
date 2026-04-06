@@ -15,16 +15,16 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
-const HASH_BYTES = 16; // 16 hex chars = 64 bits — sufficient for change detection
+const HASH_HEX_CHARS = 16; // 16 hex chars = 64 bits — sufficient for change detection
 
 /** Compute a short SHA-256 fingerprint of raw file content. */
 export function hashFileContent(content: string): string {
-  return createHash('sha256').update(content, 'utf8').digest('hex').slice(0, HASH_BYTES);
+  return createHash('sha256').update(content, 'utf8').digest('hex').slice(0, HASH_HEX_CHARS);
 }
 
 /** Compute a short SHA-256 fingerprint from a raw buffer (binary-safe). */
 export function hashFileBuffer(buf: Buffer): string {
-  return createHash('sha256').update(buf).digest('hex').slice(0, HASH_BYTES);
+  return createHash('sha256').update(buf).digest('hex').slice(0, HASH_HEX_CHARS);
 }
 
 /**
@@ -40,7 +40,7 @@ export async function computeFileHashes(
   repoPath: string,
   filePaths: readonly string[],
 ): Promise<Record<string, string>> {
-  const result: Record<string, string> = Object.create(null);
+  const result: Record<string, string> = {};
 
   const CONCURRENCY = 32;
   for (let i = 0; i < filePaths.length; i += CONCURRENCY) {
