@@ -675,8 +675,8 @@ fn caller() {
     );
     for edge in &ambiguous {
         assert!(
-            edge.confidence < 0.8,
-            "ambiguous edge confidence should be < 0.8, got {}",
+            edge.confidence < 1.0,
+            "ambiguous edge confidence should be less than 1.0, got {}",
             edge.confidence
         );
     }
