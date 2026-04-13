@@ -2,11 +2,12 @@
 //!
 //! Parses a single Rust source file and returns every top-level and
 //! nested symbol (functions, structs, enums, traits, impl blocks, etc.)
+//! together with every call site found in the file.
 
 use tree_sitter::{Node, Parser};
 
 use crate::error::SnifferError;
-use crate::symbols::{FileSymbols, Symbol, SymbolKind, Visibility};
+use crate::symbols::{FileSymbols, Symbol, SymbolKind, UnresolvedCall, Visibility};
 
 /// Parse a Rust source file and extract all symbols.
 ///
@@ -27,10 +28,14 @@ pub fn parse_file(path: &str, source: &str, hash: String) -> Result<FileSymbols,
     let mut symbols = Vec::new();
     extract_node(&root, source.as_bytes(), &mut symbols);
 
+    // Second pass: extract call sites now that we have all symbol line ranges.
+    let calls = extract_calls(&root, source.as_bytes(), &symbols);
+
     Ok(FileSymbols {
         path: path.to_owned(),
         hash,
         symbols,
+        calls,
     })
 }
 
@@ -321,4 +326,107 @@ fn has_keyword_child(node: &Node<'_>, keyword: &str) -> bool {
         }
     }
     false
+}
+
+// ─── Call-site extraction ─────────────────────────────────────────────────────
+
+/// Walk the AST and collect all call sites as [`UnresolvedCall`] values.
+///
+/// `symbols` must already contain the extracted symbols for this file so that
+/// we can determine which function encloses each call site.
+pub(crate) fn extract_calls(root: &Node<'_>, src: &[u8], symbols: &[Symbol]) -> Vec<UnresolvedCall> {
+    let mut calls = Vec::new();
+    walk_calls(root, src, symbols, &mut calls);
+    calls
+}
+
+/// Recursively walk the subtree rooted at `node`, collecting call sites.
+fn walk_calls(node: &Node<'_>, src: &[u8], symbols: &[Symbol], out: &mut Vec<UnresolvedCall>) {
+    match node.kind() {
+        "call_expression" => {
+            if let Some(callee_name) = call_expression_callee(node, src) {
+                let line = node.start_position().row + 1;
+                let caller_name = enclosing_function(line, symbols)
+                    .unwrap_or("")
+                    .to_owned();
+                out.push(UnresolvedCall { caller_name, callee_name, line });
+            }
+        }
+        "method_call_expression" => {
+            if let Some(callee_name) = method_call_expression_callee(node, src) {
+                let line = node.start_position().row + 1;
+                let caller_name = enclosing_function(line, symbols)
+                    .unwrap_or("")
+                    .to_owned();
+                out.push(UnresolvedCall { caller_name, callee_name, line });
+            }
+        }
+        _ => {}
+    }
+
+    // Recurse into all named children regardless of the current node kind so
+    // that nested calls (e.g. `foo(bar())`) are also captured.
+    for i in 0..node.named_child_count() {
+        if let Some(child) = node.named_child(i as u32) {
+            walk_calls(&child, src, symbols, out);
+        }
+    }
+}
+
+/// Extract the callee name from a `call_expression` node.
+///
+/// Handles the common patterns in Rust:
+/// * `foo()`              → identifier             → `"foo"`
+/// * `obj.field()`        → field_expression       → `"field"`
+/// * `Struct::method()`   → scoped_identifier      → `"method"`
+/// * `foo::<T>()`         → generic_function       → `"foo"`
+fn call_expression_callee(node: &Node<'_>, src: &[u8]) -> Option<String> {
+    let func = node.child_by_field_name("function")?;
+    callee_from_node(&func, src)
+}
+
+/// Extract the callee (method) name from a `method_call_expression` node.
+///
+/// tree-sitter-rust places the method name in the `name` field.
+fn method_call_expression_callee(node: &Node<'_>, src: &[u8]) -> Option<String> {
+    node.child_by_field_name("name").map(|n| node_text(&n, src))
+}
+
+/// Derive the callee name from a function-position node.
+fn callee_from_node(node: &Node<'_>, src: &[u8]) -> Option<String> {
+    match node.kind() {
+        "identifier" => Some(node_text(node, src)),
+        "field_expression" => {
+            // `(expr).field` — the method name is in the `field` child
+            node.child_by_field_name("field").map(|f| node_text(&f, src))
+        }
+        "scoped_identifier" => {
+            // `Path::name` — we want the leaf `name`
+            node.child_by_field_name("name").map(|n| node_text(&n, src))
+        }
+        "generic_function" => {
+            // `foo::<T>` — recurse into the inner function node
+            let inner = node.child_by_field_name("function")?;
+            callee_from_node(&inner, src)
+        }
+        _ => None,
+    }
+}
+
+/// Find the name of the innermost `Function` symbol that contains `line`.
+///
+/// When multiple functions nest (closures aside), the last one in the sorted
+/// symbol list whose range covers the line is the most specific enclosing
+/// function.
+fn enclosing_function(line: usize, symbols: &[Symbol]) -> Option<&str> {
+    symbols
+        .iter()
+        .filter(|s| {
+            matches!(s.kind, SymbolKind::Function)
+                && s.start_line <= line
+                && s.end_line >= line
+        })
+        // Pick the narrowest (most-nested) enclosing function.
+        .min_by_key(|s| s.end_line - s.start_line)
+        .map(|s| s.name.as_str())
 }

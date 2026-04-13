@@ -79,6 +79,22 @@ impl Symbol {
     }
 }
 
+/// An unresolved function/method call extracted from a source file.
+///
+/// The call is "unresolved" in the sense that we know the callee *name* but
+/// not yet the UID of the target node.  Resolution against the global symbol
+/// table happens in the indexer after all files have been parsed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UnresolvedCall {
+    /// Name of the enclosing function (caller).  Empty string when the call
+    /// site is not inside any recognised function.
+    pub caller_name: String,
+    /// Best-effort callee name extracted from the AST (e.g. `"new"`, `"push"`).
+    pub callee_name: String,
+    /// 1-based line number of the call site.
+    pub line: usize,
+}
+
 /// All symbols extracted from a single source file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileSymbols {
@@ -88,4 +104,6 @@ pub struct FileSymbols {
     pub hash: String,
     /// Extracted symbols, in source order.
     pub symbols: Vec<Symbol>,
+    /// Unresolved call sites extracted from this file.
+    pub calls: Vec<UnresolvedCall>,
 }
