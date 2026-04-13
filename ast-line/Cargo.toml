@@ -1,17 +1,17 @@
 [package]
-name = "rust-sniffer"
+name = "ast-line"
 version = "0.1.0"
 edition = "2021"
-description = "A Rust source-code indexer with incremental re-indexing support, built on tree-sitter."
+description = "A Rust source-code indexer with incremental re-indexing and graph-database support, built on tree-sitter."
 license = "MIT"
 repository = "https://github.com/64BitAsura/Rust-code-sniffer-"
 
 [[bin]]
-name = "rust-sniffer"
+name = "ast-line"
 path = "src/main.rs"
 
 [lib]
-name = "rust_sniffer"
+name = "ast_line"
 path = "src/lib.rs"
 
 [dependencies]

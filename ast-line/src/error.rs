@@ -1,4 +1,4 @@
-//! Error types for rust-sniffer.
+//! Error types for ast-line.
 
 use thiserror::Error;
 

@@ -1,23 +1,26 @@
-//! `rust-sniffer` — Rust source-code indexer with incremental re-indexing.
+//! `ast-line` — Rust source-code indexer with incremental re-indexing and
+//! graph-database support.
 //!
 //! # Library API
 //!
-//! The library exposes three main modules:
+//! The library exposes the following modules:
 //!
 //! * [`symbols`] — the data types returned by the indexer.
 //! * [`parser`]  — single-file tree-sitter parser.
 //! * [`incremental`] — SHA-256 fingerprinting and hash-state persistence.
 //! * [`indexer`] — directory-walk orchestrator that wires everything together.
+//! * [`graph`] — embedded graph database (node/edge types, [`GraphStore`] trait,
+//!   and [`AdjacencyStore`] implementation persisted under `.ast-line/graph/`).
 //!
 //! # Quick Start
 //!
 //! ```rust,no_run
-//! use rust_sniffer::indexer::{run_index, IndexOptions};
+//! use ast_line::indexer::{run_index, IndexOptions};
 //! use std::path::PathBuf;
 //!
 //! let opts = IndexOptions {
 //!     root: PathBuf::from("."),
-//!     index_dir: PathBuf::from(".rust-sniffer"),
+//!     index_dir: PathBuf::from(".ast-line"),
 //!     incremental: true,
 //!     verbose: false,
 //! };
@@ -27,6 +30,7 @@
 //! ```
 
 pub mod error;
+pub mod graph;
 pub mod incremental;
 pub mod indexer;
 pub mod meta;

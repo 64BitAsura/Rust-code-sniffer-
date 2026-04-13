@@ -93,7 +93,7 @@ pub async fn run_server(
     let addr = format!("{host}:{port}");
     let listener = tokio::net::TcpListener::bind(&addr).await?;
 
-    println!("rust-sniffer serve  listening on  http://{addr}");
+    println!("ast-line serve  listening on  http://{addr}");
     println!("  GET /            — Symbol Explorer web UI");
     println!("  GET /api/status  — index metadata (JSON)");
     println!("  GET /api/symbols — symbol list (JSON)");
