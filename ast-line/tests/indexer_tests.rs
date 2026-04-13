@@ -681,3 +681,161 @@ fn caller() {
         );
     }
 }
+
+// ─── IMPORTS edge tests ───────────────────────────────────────────────────────
+
+#[test]
+fn parser_extracts_simple_use_declaration() {
+    let src = r#"
+use std::collections::HashMap;
+
+fn main() {}
+"#;
+    let hash = fingerprint(src.as_bytes());
+    let result = parse_file("src/main.rs", src, hash).unwrap();
+
+    assert!(
+        !result.imports.is_empty(),
+        "expected at least one import, found none"
+    );
+    let imp = result.imports.iter().find(|i| i.raw_path.contains("HashMap"));
+    assert!(imp.is_some(), "expected an import containing 'HashMap'");
+    assert!(!imp.unwrap().is_glob, "simple import should not be a glob");
+}
+
+#[test]
+fn parser_extracts_glob_use_declaration() {
+    let src = r#"
+use crate::utils::*;
+
+fn main() {}
+"#;
+    let hash = fingerprint(src.as_bytes());
+    let result = parse_file("src/main.rs", src, hash).unwrap();
+
+    let glob = result.imports.iter().find(|i| i.is_glob);
+    assert!(glob.is_some(), "expected a glob import");
+    assert!(
+        glob.unwrap().raw_path.ends_with("::*"),
+        "glob raw_path should end with ::*"
+    );
+}
+
+#[test]
+fn parser_expands_grouped_use_declaration() {
+    let src = r#"
+use crate::models::{User, Repo};
+
+fn main() {}
+"#;
+    let hash = fingerprint(src.as_bytes());
+    let result = parse_file("src/main.rs", src, hash).unwrap();
+
+    // The grouped import should expand to two separate imports.
+    assert!(
+        result.imports.len() >= 2,
+        "expected at least 2 expanded imports, got {}",
+        result.imports.len()
+    );
+    let user_import = result.imports.iter().find(|i| i.raw_path.ends_with("User"));
+    let repo_import = result.imports.iter().find(|i| i.raw_path.ends_with("Repo"));
+    assert!(user_import.is_some(), "expected import for 'User'");
+    assert!(repo_import.is_some(), "expected import for 'Repo'");
+}
+
+#[test]
+fn indexer_emits_imports_edge_for_crate_use() {
+    use ast_line::graph::{store::AdjacencyStore, GraphStore};
+
+    let tmp = TempDir::new().unwrap();
+    make_project(
+        &tmp,
+        &[
+            ("src/models.rs", "pub struct User {}"),
+            (
+                "src/main.rs",
+                "use crate::models::User;\nfn main() {}",
+            ),
+        ],
+    );
+
+    let opts = IndexOptions {
+        root: tmp.path().to_path_buf(),
+        index_dir: index_dir(&tmp),
+        incremental: false,
+        verbose: false,
+    };
+
+    run_index(&opts).unwrap();
+
+    let store = AdjacencyStore::load(&index_dir(&tmp)).unwrap();
+    let imports: Vec<_> = store
+        .edges()
+        .filter(|e| e.edge_type == ast_line::graph::EdgeType::Imports)
+        .collect();
+
+    assert!(
+        !imports.is_empty(),
+        "expected at least one IMPORTS edge, got none"
+    );
+
+    // main.rs should import models.rs
+    let edge = imports
+        .iter()
+        .find(|e| e.source_id.contains("main.rs") && e.target_id.contains("models.rs"));
+    assert!(
+        edge.is_some(),
+        "expected IMPORTS edge from main.rs to models.rs"
+    );
+    assert_eq!(
+        edge.unwrap().confidence,
+        1.0,
+        "normal import should have confidence 1.0"
+    );
+}
+
+#[test]
+fn indexer_emits_imports_edge_with_lower_confidence_for_glob() {
+    use ast_line::graph::{store::AdjacencyStore, GraphStore};
+
+    let tmp = TempDir::new().unwrap();
+    make_project(
+        &tmp,
+        &[
+            ("src/utils.rs", "pub fn helper() {}"),
+            (
+                "src/main.rs",
+                "use crate::utils::*;\nfn main() {}",
+            ),
+        ],
+    );
+
+    let opts = IndexOptions {
+        root: tmp.path().to_path_buf(),
+        index_dir: index_dir(&tmp),
+        incremental: false,
+        verbose: false,
+    };
+
+    run_index(&opts).unwrap();
+
+    let store = AdjacencyStore::load(&index_dir(&tmp)).unwrap();
+    let glob_edges: Vec<_> = store
+        .edges()
+        .filter(|e| {
+            e.edge_type == ast_line::graph::EdgeType::Imports
+                && e.source_id.contains("main.rs")
+                && e.target_id.contains("utils.rs")
+        })
+        .collect();
+
+    assert!(
+        !glob_edges.is_empty(),
+        "expected a glob IMPORTS edge from main.rs to utils.rs"
+    );
+    assert!(
+        glob_edges[0].confidence < 1.0,
+        "glob import confidence should be < 1.0, got {}",
+        glob_edges[0].confidence
+    );
+}

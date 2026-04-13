@@ -1,6 +1,6 @@
 //! Directory-walking indexer that wires the parser and incremental state together.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -179,6 +179,16 @@ pub fn run_index(opts: &IndexOptions) -> Result<(Vec<FileSymbols>, IndexSummary)
     // Emit CALLS edges for every call site in every (re-)parsed file.
     for file_syms in &results {
         resolve_calls(&mut graph, file_syms, &name_index);
+    }
+
+    // ── 9c. Resolve IMPORTS edges ─────────────────────────────────────────────
+    // Build a set of all known file paths so we can map Rust module paths to
+    // canonical file node IDs.
+    let all_file_paths: HashSet<String> = results.iter().map(|fs| fs.path.clone()).collect();
+
+    // Emit IMPORTS edges for every `use` declaration in every file.
+    for file_syms in &results {
+        resolve_imports(&mut graph, file_syms, &all_file_paths);
     }
 
     // Persist the updated graph.
@@ -470,4 +480,148 @@ fn resolve_calls(
             });
         }
     }
+}
+
+// ─── IMPORTS edge helpers ──────────────────────────────────────────────────────
+
+/// Emit `IMPORTS` edges from the `use` declarations in `file_syms` into `graph`.
+///
+/// * Normal import  → `confidence = 1.0`
+/// * Glob import (`::*`) → `confidence = 0.5`
+/// * Unresolvable path   → edge is silently skipped
+fn resolve_imports(
+    graph: &mut AdjacencyStore,
+    file_syms: &FileSymbols,
+    all_files: &HashSet<String>,
+) {
+    let file_path = &file_syms.path;
+    let file_node_id = format!("file:{file_path}");
+
+    for import in &file_syms.imports {
+        let target_path = match resolve_import_path(file_path, &import.raw_path, all_files) {
+            Some(p) => p,
+            None => continue,
+        };
+
+        // Skip self-imports (e.g. `use self::*` pointing to the same file).
+        if target_path == *file_path {
+            continue;
+        }
+
+        let target_node_id = format!("file:{target_path}");
+        let confidence = if import.is_glob { 0.5 } else { 1.0 };
+        let edge_id = format!("{file_node_id}--IMPORTS-->{target_node_id}");
+        graph.upsert_edge(Edge {
+            id: edge_id,
+            source_id: file_node_id.clone(),
+            target_id: target_node_id,
+            edge_type: EdgeType::Imports,
+            confidence,
+            reason: "rust-use".to_owned(),
+        });
+    }
+}
+
+/// Resolve a single import path string to a canonical file path.
+///
+/// Handles `crate::`, `super::`, `self::` prefixes and bare `::` paths.
+/// Returns `None` when no matching file is found in `all_files`.
+fn resolve_import_path(
+    current_file: &str,
+    raw_path: &str,
+    all_files: &HashSet<String>,
+) -> Option<String> {
+    // Strip an alias suffix (`Foo as Bar` → `Foo`).
+    let path = raw_path
+        .split(" as ")
+        .next()
+        .unwrap_or(raw_path)
+        .trim();
+
+    if path.starts_with("crate::") {
+        // crate:: → resolve from src/ (standard Rust layout).
+        let tail = path[7..].replace("::", "/");
+        let from_src = try_module_path(&format!("src/{tail}"), all_files);
+        if from_src.is_some() {
+            return from_src;
+        }
+        return try_module_path(&tail, all_files);
+    }
+
+    if path.starts_with("super::") {
+        // super:: → parent directory of the current file's module.
+        let parts: Vec<&str> = current_file.split('/').collect();
+        // Drop the filename and one more directory level.
+        let parent = if parts.len() >= 2 { &parts[..parts.len() - 2] } else { &[] };
+        let tail = path[7..].replace("::", "/");
+        let full = if parent.is_empty() {
+            tail
+        } else {
+            format!("{}/{}", parent.join("/"), tail)
+        };
+        return try_module_path(&full, all_files);
+    }
+
+    if path.starts_with("self::") {
+        // self:: → same directory as the current file.
+        let parts: Vec<&str> = current_file.split('/').collect();
+        let dir = if parts.len() >= 2 { &parts[..parts.len() - 1] } else { &[] };
+        let tail = path[6..].replace("::", "/");
+        let full = if dir.is_empty() {
+            tail
+        } else {
+            format!("{}/{}", dir.join("/"), tail)
+        };
+        return try_module_path(&full, all_files);
+    }
+
+    if path.contains("::") {
+        // Generic qualified path — convert `::` to `/` and try direct then
+        // suffix matching.
+        let rust_path = path.replace("::", "/");
+
+        // Direct match from the repo root.
+        if let Some(found) = try_module_path(&rust_path, all_files) {
+            return Some(found);
+        }
+
+        // Suffix match: any known file that ends with this path.
+        for f in all_files {
+            let base = f.trim_end_matches(".rs").trim_end_matches("/mod");
+            if base.ends_with(&rust_path) || f.ends_with(&format!("{rust_path}.rs")) {
+                return Some(f.clone());
+            }
+        }
+    }
+
+    None
+}
+
+/// Try to resolve a Rust module path to an existing file in `all_files`.
+///
+/// Attempts in order:
+/// 1. `{path}.rs`
+/// 2. `{path}/mod.rs`
+/// 3. Recursively with the last path segment stripped (the last segment may be
+///    a symbol name rather than a module name, e.g. `models::User` → `models`).
+fn try_module_path(path: &str, all_files: &HashSet<String>) -> Option<String> {
+    let as_rs = format!("{path}.rs");
+    if all_files.contains(&as_rs) {
+        return Some(as_rs);
+    }
+
+    let as_mod = format!("{path}/mod.rs");
+    if all_files.contains(&as_mod) {
+        return Some(as_mod);
+    }
+
+    // Strip the last segment and retry (in case it was a symbol name).
+    if let Some(sep) = path.rfind('/') {
+        let parent = &path[..sep];
+        if !parent.is_empty() {
+            return try_module_path(parent, all_files);
+        }
+    }
+
+    None
 }

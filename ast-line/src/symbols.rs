@@ -95,6 +95,22 @@ pub struct UnresolvedCall {
     pub line: usize,
 }
 
+/// An unresolved `use` import extracted from a source file.
+///
+/// The import is "unresolved" in the sense that we have extracted the raw
+/// path text from the AST but have not yet mapped it to a file node.
+/// Resolution against the global file list happens in the indexer.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UnresolvedImport {
+    /// The canonical import path (e.g. `"crate::models::User"`,
+    /// `"super::utils"`, `"crate::foo::*"`).
+    pub raw_path: String,
+    /// 1-based line number of the `use` declaration.
+    pub line: usize,
+    /// `true` when the import uses a glob wildcard (`::*`).
+    pub is_glob: bool,
+}
+
 /// All symbols extracted from a single source file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileSymbols {
@@ -106,4 +122,9 @@ pub struct FileSymbols {
     pub symbols: Vec<Symbol>,
     /// Unresolved call sites extracted from this file.
     pub calls: Vec<UnresolvedCall>,
+    /// Unresolved import paths from `use` declarations in this file.
+    /// Uses `default` so that older cached serialised data (without this field)
+    /// still deserialises correctly.
+    #[serde(default)]
+    pub imports: Vec<UnresolvedImport>,
 }
