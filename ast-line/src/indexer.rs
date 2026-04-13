@@ -7,12 +7,14 @@ use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
 use crate::error::SnifferError;
+use crate::graph::store::AdjacencyStore;
+use crate::graph::{Edge, EdgeType, GraphStore, Node, NodeLabel};
 use crate::incremental::{
     diff_files, fingerprint, load_cached_symbols, save_symbols, HashState,
 };
 use crate::meta::IndexMeta;
 use crate::parser::parse_file;
-use crate::symbols::FileSymbols;
+use crate::symbols::{FileSymbols, SymbolKind};
 
 /// Options that control how the indexer behaves.
 #[derive(Debug, Clone)]
@@ -40,6 +42,10 @@ pub struct IndexSummary {
     pub total_symbols: usize,
     /// Files that were removed from the index because they no longer exist.
     pub removed_files: usize,
+    /// Total nodes in the graph after this run.
+    pub graph_nodes: usize,
+    /// Total edges in the graph after this run.
+    pub graph_edges: usize,
 }
 
 /// Run a full or incremental index of a Rust project.
@@ -151,9 +157,30 @@ pub fn run_index(opts: &IndexOptions) -> Result<(Vec<FileSymbols>, IndexSummary)
 
     let total_symbols = results.iter().map(|fs| fs.symbols.len()).sum();
 
-    // ── 9. Always write meta.json so status / serve have fresh stats ──────────
+    // ── 9. Build / update the graph store ─────────────────────────────────────
+    // Load whatever was persisted from a previous run so that unchanged-file
+    // symbols are already present in the graph.
+    let mut graph = AdjacencyStore::load(&opts.index_dir)?;
+
+    // Purge stale file nodes from the graph so deleted files don't linger.
+    for stale_path in &stale {
+        graph.remove_by_file(stale_path);
+    }
+
+    // Populate graph from the full result set (upsert is idempotent).
+    for file_syms in &results {
+        populate_graph(&mut graph, file_syms);
+    }
+
+    // Persist the updated graph.
+    graph.save(&opts.index_dir)?;
+
+    let graph_nodes = graph.node_count();
+    let graph_edges = graph.edge_count();
+
+    // ── 10. Always write meta.json so status / serve have fresh stats ──────────
     let root_str = opts.root.to_string_lossy().into_owned();
-    let meta = IndexMeta::new(root_str, total_files, total_symbols);
+    let meta = IndexMeta::new(root_str, total_files, total_symbols, graph_nodes, graph_edges);
     // Best-effort: a metadata write failure is not fatal.
     let _ = meta.save(&opts.index_dir);
 
@@ -163,6 +190,8 @@ pub fn run_index(opts: &IndexOptions) -> Result<(Vec<FileSymbols>, IndexSummary)
         skipped_files: skipped_count,
         total_symbols,
         removed_files: removed_count,
+        graph_nodes,
+        graph_edges,
     };
 
     Ok((results, summary))
@@ -201,4 +230,158 @@ pub fn fingerprint_file(path: &Path) -> Result<String, SnifferError> {
     let content = fs::read(path)
         .map_err(|e| SnifferError::Io(format!("reading {}: {e}", path.display())))?;
     Ok(fingerprint(&content))
+}
+
+/// Populate `graph` with the nodes and edges derived from a single file's
+/// extracted symbols.
+///
+/// Creates:
+/// * One `File` node for the source file itself.
+/// * One node per symbol (function, struct, enum, …).
+/// * `DEFINES` edges from the `File` node to each top-level symbol.
+/// * `HAS_METHOD` edges from `Impl`/`TraitImpl` nodes to their enclosed
+///   `Function` symbols (not yet tracked by the parser, so this is a
+///   best-effort pass).
+/// * `HAS_PROPERTY` edges from `Struct`/`Enum` nodes to `Field` symbols.
+/// * `IMPLEMENTS` edges from `TraitImpl` nodes to a synthetic trait node.
+fn populate_graph(graph: &mut AdjacencyStore, file_syms: &FileSymbols) {
+    let file_path = &file_syms.path;
+
+    // ── File node ──────────────────────────────────────────────────────────────
+    let file_node_id = format!("file:{file_path}");
+    graph.upsert_node(Node {
+        id: file_node_id.clone(),
+        label: NodeLabel::File,
+        name: file_path.clone(),
+        file_path: String::new(),
+        start_line: 0,
+        end_line: 0,
+    });
+
+    // ── Symbol nodes + DEFINES edges ──────────────────────────────────────────
+    // We also collect impl/struct/enum containers to attach child edges later.
+    // Since the parser doesn't emit hierarchical parent info, we use a
+    // line-range heuristic: a symbol is a "child" of the closest preceding
+    // container whose end_line >= symbol.start_line.
+
+    // Build a vector of (node_id, symbol) for further edge analysis.
+    let mut sym_ids: Vec<(String, &crate::symbols::Symbol)> = Vec::new();
+
+    for sym in &file_syms.symbols {
+        let label = symbol_kind_to_label(&sym.kind);
+        let sym_id = format!("{label}:{file_path}::{}", sym.name);
+
+        graph.upsert_node(Node {
+            id: sym_id.clone(),
+            label,
+            name: sym.name.clone(),
+            file_path: file_path.clone(),
+            start_line: sym.start_line,
+            end_line: sym.end_line,
+        });
+
+        // File DEFINES every top-level symbol.
+        let edge_id = format!("{file_node_id}--DEFINES-->{sym_id}");
+        graph.upsert_edge(Edge {
+            id: edge_id,
+            source_id: file_node_id.clone(),
+            target_id: sym_id.clone(),
+            edge_type: EdgeType::Defines,
+            confidence: 1.0,
+            reason: String::new(),
+        });
+
+        sym_ids.push((sym_id, sym));
+    }
+
+    // ── Containment / membership edges ────────────────────────────────────────
+    // For each symbol, find the enclosing container (the last container in the
+    // list whose line range fully encompasses this symbol).
+    for (child_id, child_sym) in &sym_ids {
+        // Find the nearest enclosing impl / struct / enum / trait / module.
+        let container = sym_ids.iter().find(|(_, s)| {
+            is_container(&s.kind)
+                && s.start_line <= child_sym.start_line
+                && s.end_line >= child_sym.end_line
+                && s.name != child_sym.name
+        });
+
+        if let Some((container_id, container_sym)) = container {
+            let etype = match (&container_sym.kind, &child_sym.kind) {
+                (SymbolKind::Struct | SymbolKind::Enum, SymbolKind::Field) => {
+                    EdgeType::HasProperty
+                }
+                (SymbolKind::Impl | SymbolKind::TraitImpl, SymbolKind::Function) => {
+                    EdgeType::HasMethod
+                }
+                _ => EdgeType::Contains,
+            };
+            let edge_id = format!("{container_id}--{}-->{child_id}", etype);
+            graph.upsert_edge(Edge {
+                id: edge_id,
+                source_id: container_id.clone(),
+                target_id: child_id.clone(),
+                edge_type: etype,
+                confidence: 1.0,
+                reason: String::new(),
+            });
+        }
+    }
+
+    // ── IMPLEMENTS edges for TraitImpl nodes ──────────────────────────────────
+    for (impl_id, sym) in &sym_ids {
+        if sym.kind == SymbolKind::TraitImpl {
+            if let Some(trait_name) = &sym.trait_name {
+                // Emit a synthetic trait node if it isn't already present.
+                let trait_node_id = format!("Trait::{trait_name}");
+                graph.upsert_node(Node {
+                    id: trait_node_id.clone(),
+                    label: NodeLabel::Trait,
+                    name: trait_name.clone(),
+                    file_path: String::new(),
+                    start_line: 0,
+                    end_line: 0,
+                });
+                let edge_id = format!("{impl_id}--IMPLEMENTS-->{trait_node_id}");
+                graph.upsert_edge(Edge {
+                    id: edge_id,
+                    source_id: impl_id.clone(),
+                    target_id: trait_node_id,
+                    edge_type: EdgeType::Implements,
+                    confidence: 1.0,
+                    reason: String::new(),
+                });
+            }
+        }
+    }
+}
+
+/// Convert a [`SymbolKind`] to the corresponding [`NodeLabel`].
+fn symbol_kind_to_label(kind: &SymbolKind) -> NodeLabel {
+    match kind {
+        SymbolKind::Function => NodeLabel::Function,
+        SymbolKind::Struct => NodeLabel::Struct,
+        SymbolKind::Enum => NodeLabel::Enum,
+        SymbolKind::Trait => NodeLabel::Trait,
+        SymbolKind::Impl | SymbolKind::TraitImpl => NodeLabel::Impl,
+        SymbolKind::Module => NodeLabel::Module,
+        SymbolKind::TypeAlias => NodeLabel::TypeAlias,
+        SymbolKind::Constant => NodeLabel::Constant,
+        SymbolKind::Static => NodeLabel::Static,
+        SymbolKind::Macro => NodeLabel::Macro,
+        SymbolKind::Field => NodeLabel::Field,
+    }
+}
+
+/// Return `true` if a symbol kind can act as a container for child symbols.
+fn is_container(kind: &SymbolKind) -> bool {
+    matches!(
+        kind,
+        SymbolKind::Struct
+            | SymbolKind::Enum
+            | SymbolKind::Impl
+            | SymbolKind::TraitImpl
+            | SymbolKind::Module
+            | SymbolKind::Trait
+    )
 }

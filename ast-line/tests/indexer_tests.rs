@@ -1,13 +1,13 @@
-//! Integration tests for the rust-sniffer indexer.
+//! Integration tests for the ast-line indexer.
 
 use std::fs;
 
 use tempfile::TempDir;
 
-use rust_sniffer::indexer::{run_index, IndexOptions};
-use rust_sniffer::incremental::{fingerprint, HashState};
-use rust_sniffer::parser::parse_file;
-use rust_sniffer::symbols::SymbolKind;
+use ast_line::indexer::{run_index, IndexOptions};
+use ast_line::incremental::{fingerprint, HashState};
+use ast_line::parser::parse_file;
+use ast_line::symbols::SymbolKind;
 
 // ─── Fixture helpers ──────────────────────────────────────────────────────────
 
@@ -22,7 +22,7 @@ fn make_project(dir: &TempDir, files: &[(&str, &str)]) {
 }
 
 fn index_dir(tmp: &TempDir) -> std::path::PathBuf {
-    tmp.path().join(".rust-sniffer")
+    tmp.path().join(".ast-line")
 }
 
 // ─── Parser unit tests ────────────────────────────────────────────────────────
@@ -365,4 +365,116 @@ fn hash_state_load_returns_empty_when_no_file() {
     let tmp = TempDir::new().unwrap();
     let state = HashState::load(tmp.path()).unwrap();
     assert!(state.hashes.is_empty());
+}
+
+// ─── Graph integration tests ──────────────────────────────────────────────────
+
+#[test]
+fn index_populates_graph_directory() {
+    let tmp = TempDir::new().unwrap();
+    make_project(&tmp, &[("src/lib.rs", "pub fn helper() {}")]);
+
+    let opts = IndexOptions {
+        root: tmp.path().to_path_buf(),
+        index_dir: index_dir(&tmp),
+        incremental: false,
+        verbose: false,
+    };
+
+    let (_, summary) = run_index(&opts).unwrap();
+
+    // Graph files should be created.
+    assert!(
+        index_dir(&tmp).join("graph").join("nodes.json").exists(),
+        "nodes.json should be created"
+    );
+    assert!(
+        index_dir(&tmp).join("graph").join("edges.json").exists(),
+        "edges.json should be created"
+    );
+
+    // Summary should report graph counts.
+    assert!(summary.graph_nodes >= 2, "at least File + Function nodes");
+    assert!(summary.graph_edges >= 1, "at least one DEFINES edge");
+}
+
+#[test]
+fn graph_node_count_reported_in_summary() {
+    let tmp = TempDir::new().unwrap();
+    make_project(
+        &tmp,
+        &[
+            ("src/a.rs", "pub fn foo() {}\npub fn bar() {}"),
+            ("src/b.rs", "pub struct Config {}"),
+        ],
+    );
+
+    let opts = IndexOptions {
+        root: tmp.path().to_path_buf(),
+        index_dir: index_dir(&tmp),
+        incremental: false,
+        verbose: false,
+    };
+
+    let (_, summary) = run_index(&opts).unwrap();
+
+    // 2 File nodes + 2 Function nodes + 1 Struct node = 5 minimum
+    assert!(summary.graph_nodes >= 5, "expected ≥5 nodes, got {}", summary.graph_nodes);
+    // At least 3 DEFINES edges (one per symbol across both files)
+    assert!(summary.graph_edges >= 3, "expected ≥3 edges, got {}", summary.graph_edges);
+}
+
+#[test]
+fn incremental_index_purges_stale_graph_nodes() {
+    let tmp = TempDir::new().unwrap();
+    make_project(
+        &tmp,
+        &[
+            ("src/keep.rs", "pub fn kept() {}"),
+            ("src/remove.rs", "pub fn gone() {}"),
+        ],
+    );
+
+    let opts = IndexOptions {
+        root: tmp.path().to_path_buf(),
+        index_dir: index_dir(&tmp),
+        incremental: true,
+        verbose: false,
+    };
+
+    // First run populates the graph.
+    let (_, summary1) = run_index(&opts).unwrap();
+    let nodes_after_first = summary1.graph_nodes;
+
+    // Delete one file and re-index.
+    fs::remove_file(tmp.path().join("src/remove.rs")).unwrap();
+    let (_, summary2) = run_index(&opts).unwrap();
+
+    // Graph should have fewer nodes after the stale file is purged.
+    assert!(
+        summary2.graph_nodes < nodes_after_first,
+        "graph should shrink after file deletion"
+    );
+}
+
+#[test]
+fn graph_persists_across_runs() {
+    use ast_line::graph::{store::AdjacencyStore, GraphStore};
+
+    let tmp = TempDir::new().unwrap();
+    make_project(&tmp, &[("src/lib.rs", "pub fn entry() {}")]);
+
+    let opts = IndexOptions {
+        root: tmp.path().to_path_buf(),
+        index_dir: index_dir(&tmp),
+        incremental: true,
+        verbose: false,
+    };
+
+    run_index(&opts).unwrap();
+
+    // Load the persisted graph directly.
+    let store = AdjacencyStore::load(&index_dir(&tmp)).unwrap();
+    assert!(store.node_count() >= 2, "at least File + Function node");
+    assert!(store.edge_count() >= 1, "at least one DEFINES edge");
 }

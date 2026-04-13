@@ -13,7 +13,7 @@ use crate::error::SnifferError;
 
 const META_FILE: &str = "meta.json";
 
-/// Metadata written to `.rust-sniffer/meta.json` after each successful index run.
+/// Metadata written to `.ast-line/meta.json` after each successful index run.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IndexMeta {
     /// RFC 3339 timestamp of when the index was last built.
@@ -24,16 +24,28 @@ pub struct IndexMeta {
     pub file_count: usize,
     /// Total number of extracted symbols.
     pub symbol_count: usize,
+    /// Number of nodes in the graph store.
+    pub graph_node_count: usize,
+    /// Number of edges in the graph store.
+    pub graph_edge_count: usize,
 }
 
 impl IndexMeta {
     /// Create a new `IndexMeta` stamped with the current UTC time.
-    pub fn new(root: impl Into<String>, file_count: usize, symbol_count: usize) -> Self {
+    pub fn new(
+        root: impl Into<String>,
+        file_count: usize,
+        symbol_count: usize,
+        graph_node_count: usize,
+        graph_edge_count: usize,
+    ) -> Self {
         IndexMeta {
             indexed_at: Utc::now().to_rfc3339(),
             root: root.into(),
             file_count,
             symbol_count,
+            graph_node_count,
+            graph_edge_count,
         }
     }
 

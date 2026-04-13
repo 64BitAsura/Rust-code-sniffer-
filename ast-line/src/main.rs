@@ -1,13 +1,13 @@
-//! `rust-sniffer` CLI — Rust code indexer with incremental re-indexing.
+//! `ast-line` CLI — Rust code indexer with incremental re-indexing.
 //!
 //! ## Commands
 //!
 //! ```text
-//! rust-sniffer index  [OPTIONS] [ROOT]   — Index a Rust project
-//! rust-sniffer diff   [OPTIONS] [ROOT]   — Preview incremental changes
-//! rust-sniffer status [OPTIONS]          — Show index status
-//! rust-sniffer clean  [OPTIONS]          — Delete the index
-//! rust-sniffer serve  [OPTIONS]          — Start the web UI + REST API server
+//! ast-line index  [OPTIONS] [ROOT]   — Index a Rust project
+//! ast-line diff   [OPTIONS] [ROOT]   — Preview incremental changes
+//! ast-line status [OPTIONS]          — Show index status
+//! ast-line clean  [OPTIONS]          — Delete the index
+//! ast-line serve  [OPTIONS]          — Start the web UI + REST API server
 //! ```
 
 use std::path::PathBuf;
@@ -15,11 +15,11 @@ use std::process;
 
 use clap::{Parser, Subcommand};
 
-use rust_sniffer::indexer::{run_index, IndexOptions};
+use ast_line::indexer::{run_index, IndexOptions};
 
 /// Rust source-code indexer with incremental re-indexing support.
 #[derive(Parser)]
-#[command(name = "rust-sniffer", version, about, long_about = None)]
+#[command(name = "ast-line", version, about, long_about = None)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -34,7 +34,7 @@ enum Commands {
         root: PathBuf,
 
         /// Directory where the index state is stored.
-        #[arg(long, default_value = ".rust-sniffer")]
+        #[arg(long, default_value = ".ast-line")]
         index_dir: PathBuf,
 
         /// Only re-parse files whose content has changed since the last run.
@@ -57,21 +57,21 @@ enum Commands {
         root: PathBuf,
 
         /// Directory where the index state is stored.
-        #[arg(long, default_value = ".rust-sniffer")]
+        #[arg(long, default_value = ".ast-line")]
         index_dir: PathBuf,
     },
 
     /// Show the current index status (file count, symbol count, last indexed time).
     Status {
         /// Directory where the index state is stored.
-        #[arg(long, default_value = ".rust-sniffer")]
+        #[arg(long, default_value = ".ast-line")]
         index_dir: PathBuf,
     },
 
     /// Delete the index directory.
     Clean {
         /// Directory where the index state is stored.
-        #[arg(long, default_value = ".rust-sniffer")]
+        #[arg(long, default_value = ".ast-line")]
         index_dir: PathBuf,
 
         /// Skip the confirmation prompt and delete immediately.
@@ -82,7 +82,7 @@ enum Commands {
     /// Start the Symbol Explorer web UI and REST API server.
     Serve {
         /// Directory where the index state is stored.
-        #[arg(long, default_value = ".rust-sniffer")]
+        #[arg(long, default_value = ".ast-line")]
         index_dir: PathBuf,
 
         /// Port to listen on.
@@ -124,6 +124,11 @@ fn main() {
                             summary.removed_files,
                             summary.total_symbols,
                         );
+                        eprintln!(
+                            "Graph: {} node(s), {} edge(s)",
+                            summary.graph_nodes,
+                            summary.graph_edges,
+                        );
                     }
 
                     let json = if *pretty {
@@ -148,7 +153,7 @@ fn main() {
         }
 
         Commands::Diff { root, index_dir } => {
-            use rust_sniffer::incremental::{diff_files, HashState};
+            use ast_line::incremental::{diff_files, HashState};
             use walkdir::WalkDir;
 
             // Collect *.rs files
@@ -197,7 +202,7 @@ fn main() {
         }
 
         Commands::Status { index_dir } => {
-            use rust_sniffer::meta::IndexMeta;
+            use ast_line::meta::IndexMeta;
 
             match IndexMeta::load(index_dir) {
                 Some(meta) => {
@@ -206,10 +211,12 @@ fn main() {
                     println!("Indexed at:       {}", meta.indexed_at);
                     println!("Files indexed:    {}", meta.file_count);
                     println!("Total symbols:    {}", meta.symbol_count);
+                    println!("Graph nodes:      {}", meta.graph_node_count);
+                    println!("Graph edges:      {}", meta.graph_edge_count);
                 }
                 None => {
                     println!("No index found at '{}'.", index_dir.display());
-                    println!("Run:  rust-sniffer index --incremental");
+                    println!("Run:  ast-line index --incremental");
                 }
             }
         }
@@ -243,7 +250,7 @@ fn main() {
             port,
             host,
         } => {
-            use rust_sniffer::server::run_server;
+            use ast_line::server::run_server;
 
             let rt = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
