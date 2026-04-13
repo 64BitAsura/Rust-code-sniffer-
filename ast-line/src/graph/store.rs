@@ -132,6 +132,18 @@ impl GraphStore for AdjacencyStore {
     }
 }
 
+impl AdjacencyStore {
+    /// Iterate over all edges in the store.
+    pub fn edges(&self) -> impl Iterator<Item = &Edge> {
+        self.edges.values()
+    }
+
+    /// Iterate over all nodes in the store.
+    pub fn nodes(&self) -> impl Iterator<Item = &Node> {
+        self.nodes.values()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

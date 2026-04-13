@@ -478,3 +478,206 @@ fn graph_persists_across_runs() {
     assert!(store.node_count() >= 2, "at least File + Function node");
     assert!(store.edge_count() >= 1, "at least one DEFINES edge");
 }
+
+// ─── CALLS edge tests ─────────────────────────────────────────────────────────
+
+#[test]
+fn parser_extracts_direct_function_calls() {
+    let src = r#"
+fn helper() {}
+
+fn caller() {
+    helper();
+}
+"#;
+    let hash = fingerprint(src.as_bytes());
+    let result = parse_file("test.rs", src, hash).unwrap();
+
+    assert!(
+        !result.calls.is_empty(),
+        "expected at least one call site, found none"
+    );
+    let call = result.calls.iter().find(|c| c.callee_name == "helper");
+    assert!(call.is_some(), "expected a call to 'helper'");
+    let call = call.unwrap();
+    assert_eq!(call.caller_name, "caller", "enclosing function should be 'caller'");
+}
+
+#[test]
+fn parser_extracts_method_calls() {
+    let src = r#"
+fn process(v: Vec<u8>) -> usize {
+    v.len()
+}
+"#;
+    let hash = fingerprint(src.as_bytes());
+    let result = parse_file("test.rs", src, hash).unwrap();
+
+    let call = result.calls.iter().find(|c| c.callee_name == "len");
+    assert!(call.is_some(), "expected a call to 'len'");
+    assert_eq!(call.unwrap().caller_name, "process");
+}
+
+#[test]
+fn parser_extracts_scoped_calls() {
+    let src = r#"
+fn setup() {
+    let s = String::new();
+    let _ = s;
+}
+"#;
+    let hash = fingerprint(src.as_bytes());
+    let result = parse_file("test.rs", src, hash).unwrap();
+
+    let call = result.calls.iter().find(|c| c.callee_name == "new");
+    assert!(call.is_some(), "expected a scoped call to 'new'");
+    assert_eq!(call.unwrap().caller_name, "setup");
+}
+
+#[test]
+fn indexer_emits_calls_edge_for_intra_file_call() {
+    use ast_line::graph::{store::AdjacencyStore, GraphStore};
+
+    let tmp = TempDir::new().unwrap();
+    make_project(
+        &tmp,
+        &[(
+            "src/lib.rs",
+            r#"
+pub fn helper() {}
+
+pub fn caller() {
+    helper();
+}
+"#,
+        )],
+    );
+
+    let opts = IndexOptions {
+        root: tmp.path().to_path_buf(),
+        index_dir: index_dir(&tmp),
+        incremental: false,
+        verbose: false,
+    };
+
+    let (_, summary) = run_index(&opts).unwrap();
+
+    // Load the persisted graph and verify a CALLS edge exists.
+    let store = AdjacencyStore::load(&index_dir(&tmp)).unwrap();
+
+    let edges: Vec<_> = store
+        .edges()
+        .filter(|e| e.edge_type == ast_line::graph::EdgeType::Calls)
+        .collect();
+
+    assert!(
+        !edges.is_empty(),
+        "expected at least one CALLS edge, got {summary:?}"
+    );
+
+    // The caller → helper edge should exist with full confidence.
+    let call_edge = edges
+        .iter()
+        .find(|e| e.source_id.contains("caller") && e.target_id.contains("helper"));
+    assert!(call_edge.is_some(), "expected a CALLS edge from 'caller' to 'helper'");
+    assert_eq!(call_edge.unwrap().confidence, 1.0, "intra-file exact call should have confidence 1.0");
+}
+
+#[test]
+fn indexer_emits_calls_edge_for_cross_file_call() {
+    use ast_line::graph::{store::AdjacencyStore, GraphStore};
+
+    let tmp = TempDir::new().unwrap();
+    make_project(
+        &tmp,
+        &[
+            ("src/lib.rs", "pub fn util() {}"),
+            (
+                "src/main.rs",
+                r#"
+fn main() {
+    util();
+}
+"#,
+            ),
+        ],
+    );
+
+    let opts = IndexOptions {
+        root: tmp.path().to_path_buf(),
+        index_dir: index_dir(&tmp),
+        incremental: false,
+        verbose: false,
+    };
+
+    run_index(&opts).unwrap();
+
+    let store = AdjacencyStore::load(&index_dir(&tmp)).unwrap();
+    let calls: Vec<_> = store
+        .edges()
+        .filter(|e| e.edge_type == ast_line::graph::EdgeType::Calls)
+        .collect();
+
+    let cross = calls
+        .iter()
+        .find(|e| e.source_id.contains("main") && e.target_id.contains("util"));
+    assert!(
+        cross.is_some(),
+        "expected a cross-file CALLS edge from 'main' to 'util'"
+    );
+}
+
+#[test]
+fn indexer_confidence_is_below_one_for_ambiguous_calls() {
+    use ast_line::graph::{store::AdjacencyStore, GraphStore};
+
+    // Two files both define a function called `helper`. A call to `helper`
+    // from a third file is ambiguous → confidence < 1.0.
+    let tmp = TempDir::new().unwrap();
+    make_project(
+        &tmp,
+        &[
+            ("src/a.rs", "pub fn helper() {}"),
+            ("src/b.rs", "pub fn helper() {}"),
+            (
+                "src/main.rs",
+                r#"
+fn caller() {
+    helper();
+}
+"#,
+            ),
+        ],
+    );
+
+    let opts = IndexOptions {
+        root: tmp.path().to_path_buf(),
+        index_dir: index_dir(&tmp),
+        incremental: false,
+        verbose: false,
+    };
+
+    run_index(&opts).unwrap();
+
+    let store = AdjacencyStore::load(&index_dir(&tmp)).unwrap();
+    let ambiguous: Vec<_> = store
+        .edges()
+        .filter(|e| {
+            e.edge_type == ast_line::graph::EdgeType::Calls
+                && e.source_id.contains("caller")
+                && e.confidence < 1.0
+        })
+        .collect();
+
+    assert!(
+        !ambiguous.is_empty(),
+        "expected ambiguous CALLS edges when multiple callees share the same name"
+    );
+    for edge in &ambiguous {
+        assert!(
+            edge.confidence < 0.8,
+            "ambiguous edge confidence should be < 0.8, got {}",
+            edge.confidence
+        );
+    }
+}

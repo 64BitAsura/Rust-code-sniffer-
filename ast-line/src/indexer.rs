@@ -172,6 +172,15 @@ pub fn run_index(opts: &IndexOptions) -> Result<(Vec<FileSymbols>, IndexSummary)
         populate_graph(&mut graph, file_syms);
     }
 
+    // ── 9b. Resolve CALLS edges ────────────────────────────────────────────────
+    // Build a global name → Vec<node_id> lookup table from all known symbols.
+    let name_index = build_name_index(&results);
+
+    // Emit CALLS edges for every call site in every (re-)parsed file.
+    for file_syms in &results {
+        resolve_calls(&mut graph, file_syms, &name_index);
+    }
+
     // Persist the updated graph.
     graph.save(&opts.index_dir)?;
 
@@ -384,4 +393,81 @@ fn is_container(kind: &SymbolKind) -> bool {
             | SymbolKind::Module
             | SymbolKind::Trait
     )
+}
+
+// ─── CALLS edge helpers ────────────────────────────────────────────────────────
+
+/// Build a map from symbol name → list of node UIDs across all indexed files.
+///
+/// Only callable symbols (functions, and also structs/enums to catch
+/// constructor-style calls) are indexed.
+fn build_name_index(all_files: &[FileSymbols]) -> HashMap<String, Vec<String>> {
+    let mut index: HashMap<String, Vec<String>> = HashMap::new();
+
+    for file_syms in all_files {
+        let file_path = &file_syms.path;
+        for sym in &file_syms.symbols {
+            // Only index symbols that can meaningfully be callee targets.
+            if !matches!(
+                sym.kind,
+                SymbolKind::Function
+                    | SymbolKind::Struct
+                    | SymbolKind::Enum
+                    | SymbolKind::Macro
+            ) {
+                continue;
+            }
+            let label = symbol_kind_to_label(&sym.kind);
+            let node_id = format!("{label}:{file_path}::{}", sym.name);
+            index.entry(sym.name.clone()).or_default().push(node_id);
+        }
+    }
+
+    index
+}
+
+/// Emit `CALLS` edges from the call sites in `file_syms` into `graph`.
+///
+/// * Exact match (one candidate)  → `confidence = 1.0`
+/// * Ambiguous match (>1 candidate) → `confidence = 0.7` for every candidate
+/// * No match                     → edge is skipped
+fn resolve_calls(
+    graph: &mut AdjacencyStore,
+    file_syms: &FileSymbols,
+    name_index: &HashMap<String, Vec<String>>,
+) {
+    let file_path = &file_syms.path;
+
+    for call in &file_syms.calls {
+        // Skip call sites that are not inside a named function.
+        if call.caller_name.is_empty() {
+            continue;
+        }
+
+        let caller_id = format!("Function:{file_path}::{}", call.caller_name);
+
+        let candidates = match name_index.get(&call.callee_name) {
+            Some(c) if !c.is_empty() => c,
+            _ => continue,
+        };
+
+        let confidence = if candidates.len() == 1 { 1.0 } else { 0.7 };
+
+        for callee_id in candidates {
+            // Skip self-recursive edges that trivially appear as "calls itself".
+            if callee_id == &caller_id {
+                continue;
+            }
+
+            let edge_id = format!("{caller_id}--CALLS-->{callee_id}:L{}", call.line);
+            graph.upsert_edge(Edge {
+                id: edge_id,
+                source_id: caller_id.clone(),
+                target_id: callee_id.clone(),
+                edge_type: EdgeType::Calls,
+                confidence,
+                reason: "rust-call".to_owned(),
+            });
+        }
+    }
 }
