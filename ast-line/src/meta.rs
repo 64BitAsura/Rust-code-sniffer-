@@ -14,6 +14,8 @@ use crate::error::SnifferError;
 const META_FILE: &str = "meta.json";
 
 /// Metadata written to `.ast-line/meta.json` after each successful index run.
+/// Includes file count, symbol count, and graph node/edge counts so that the
+/// `status` and `serve` commands can report statistics without re-scanning.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IndexMeta {
     /// RFC 3339 timestamp of when the index was last built.

@@ -1,4 +1,4 @@
-# rust-sniffer
+# ast-line
 
 A fast, tree-sitter–based Rust source-code indexer written in Rust, with **incremental re-indexing** support and an embedded **Symbol Explorer web UI**.
 
@@ -6,18 +6,19 @@ A fast, tree-sitter–based Rust source-code indexer written in Rust, with **inc
 
 - **Symbol extraction** — functions (including `async`), structs, enums, traits, `impl` blocks (plain and trait-impl), modules, type aliases, constants, statics, macros, and struct fields.
 - **Rich metadata** — visibility (`public` / `restricted` / `private`), line ranges, return types, field types, and `is_async` flag.
-- **Incremental indexing** — SHA-256 fingerprints (16-char prefix) are persisted in `.rust-sniffer/hashes.json`; on subsequent runs only changed files are re-parsed.
+- **Incremental indexing** — SHA-256 fingerprints (16-char prefix) are persisted in `.ast-line/hashes.json`; on subsequent runs only changed files are re-parsed.
+- **Embedded graph database** — symbol relationships (calls, containment, trait implementations, …) are stored in `.ast-line/graph/` as a compact JSON adjacency list, queryable via the `GraphStore` trait.
 - **JSON output** — every indexed file emits structured JSON suitable for further tooling.
-- **`status`** — inspect the index at a glance: file count, symbol count, and when it was last built.
+- **`status`** — inspect the index at a glance: file count, symbol count, graph node/edge counts, and when it was last built.
 - **`clean`** — safely delete the index directory with a `--force` guard.
 - **`serve`** — start a local HTTP server that exposes a REST API and a built-in Symbol Explorer web UI (no separate install needed).
 
 ## Installation
 
 ```bash
-cd rust-sniffer
+cd ast-line
 cargo build --release
-# binary is at target/release/rust-sniffer
+# binary is at target/release/ast-line
 ```
 
 ## Usage
@@ -25,12 +26,12 @@ cargo build --release
 ### Full index
 
 ```bash
-rust-sniffer index [ROOT] [OPTIONS]
+ast-line index [ROOT] [OPTIONS]
 ```
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--index-dir <DIR>` | `.rust-sniffer` | Where hash state and symbol cache are stored |
+| `--index-dir <DIR>` | `.ast-line` | Where hash state and symbol cache are stored |
 | `--incremental` / `-i` | off | Only re-parse changed files |
 | `--verbose` / `-v` | off | Print per-file progress to stderr |
 | `--pretty` / `-p` | off | Pretty-print the JSON output |
@@ -38,7 +39,7 @@ rust-sniffer index [ROOT] [OPTIONS]
 **First run (full parse):**
 
 ```bash
-rust-sniffer index ./my-project --incremental --verbose --pretty
+ast-line index ./my-project --incremental --verbose --pretty
 ```
 
 ```
@@ -57,7 +58,7 @@ Indexed 2 file(s): 2 parsed, 0 cached, 0 removed, 15 symbols total
 **Second run (incremental — nothing changed):**
 
 ```bash
-rust-sniffer index ./my-project --incremental --verbose
+ast-line index ./my-project --incremental --verbose
 ```
 
 ```
@@ -69,7 +70,7 @@ Indexed 2 file(s): 0 parsed, 2 cached, 0 removed, 15 symbols total
 ### Diff — preview what would be re-parsed
 
 ```bash
-rust-sniffer diff [ROOT] [OPTIONS]
+ast-line diff [ROOT] [OPTIONS]
 ```
 
 ```
@@ -86,57 +87,59 @@ Or, if a file was modified:
 ### Status — inspect the current index
 
 ```bash
-rust-sniffer status [--index-dir <DIR>]
+ast-line status [--index-dir <DIR>]
 ```
 
 ```
-Index directory:  .rust-sniffer
+Index directory:  .ast-line
 Root:             /home/user/my-project
 Indexed at:       2024-03-15T10:30:00+00:00
 Files indexed:    42
 Total symbols:    1,234
+Graph nodes:      1,398
+Graph edges:      3,201
 ```
 
 If no index exists yet:
 
 ```
-No index found at '.rust-sniffer'.
-Run:  rust-sniffer index --incremental
+No index found at '.ast-line'.
+Run:  ast-line index --incremental
 ```
 
 ### Clean — delete the index
 
 ```bash
-rust-sniffer clean [--index-dir <DIR>] [--force]
+ast-line clean [--index-dir <DIR>] [--force]
 ```
 
 Without `--force`, shows what would be deleted:
 
 ```
-This will delete the index at '.rust-sniffer'.
+This will delete the index at '.ast-line'.
 Run with --force to confirm deletion.
 ```
 
 With `--force`:
 
 ```
-Deleted '.rust-sniffer'.
+Deleted '.ast-line'.
 ```
 
 ### Serve — Symbol Explorer web UI + REST API
 
 ```bash
-rust-sniffer serve [OPTIONS]
+ast-line serve [OPTIONS]
 ```
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--index-dir <DIR>` | `.rust-sniffer` | Where the index is stored |
+| `--index-dir <DIR>` | `.ast-line` | Where the index is stored |
 | `--port <PORT>` | `3741` | TCP port to listen on |
 | `--host <HOST>` | `localhost` | Bind address |
 
 ```
-rust-sniffer serve  listening on  http://localhost:3741
+ast-line serve  listening on  http://localhost:3741
   GET /            — Symbol Explorer web UI
   GET /api/status  — index metadata (JSON)
   GET /api/symbols — symbol list (JSON)
@@ -147,8 +150,8 @@ Open `http://localhost:3741` in a browser to browse all indexed symbols, filter 
 **Tip:** run `index --incremental` first, then `serve` to explore the results interactively.
 
 ```bash
-rust-sniffer index . --incremental
-rust-sniffer serve
+ast-line index . --incremental
+ast-line serve
 ```
 
 #### REST API
@@ -217,25 +220,46 @@ Each element in the top-level JSON array corresponds to one file:
 On each `index --incremental` run:
 
 1. All `*.rs` files under `ROOT` are discovered and their SHA-256 prefix fingerprints computed.
-2. Fingerprints are compared to `.rust-sniffer/hashes.json` (loaded from the previous run).
+2. Fingerprints are compared to `.ast-line/hashes.json` (loaded from the previous run).
 3. **Changed / new** files are re-parsed by tree-sitter.
-4. **Unchanged** files have their symbols loaded from `.rust-sniffer/symbols.json`.
-5. Deleted files are removed from the state.
-6. The updated state and symbol cache are written back to `.rust-sniffer/`.
+4. **Unchanged** files have their symbols loaded from `.ast-line/symbols.json`.
+5. Deleted files are removed from the state; their graph nodes and edges are purged.
+6. The updated state and symbol cache are written back to `.ast-line/`.
+7. The graph store (`.ast-line/graph/`) is loaded, updated with fresh nodes/edges, and persisted.
 
 This mirrors the strategy used by the GitNexus TypeScript pipeline
 (`RepoMeta.fileHashes` + `diffFileHashes()`), re-implemented natively in Rust.
 
 After each successful `index` run a `meta.json` file is also written to the
 index directory — it records the root path, indexed-at timestamp, file count,
-and symbol count. The `status` and `serve` commands read this file to avoid
-having to re-scan the project just to report statistics.
+symbol count, and graph node/edge counts. The `status` and `serve` commands
+read this file to avoid having to re-scan the project just to report statistics.
+
+## Graph database
+
+`ast-line index` populates an embedded graph database under `.ast-line/graph/`:
+
+| File | Contents |
+|------|----------|
+| `nodes.json` | Flat array of node objects (`id`, `label`, `name`, `file_path`, `start_line`, `end_line`) |
+| `edges.json` | Flat array of edge objects (`id`, `source_id`, `target_id`, `edge_type`, `confidence`, `reason`) |
+
+### Node labels
+`File`, `Function`, `Struct`, `Enum`, `Trait`, `Impl`, `Module`, `TypeAlias`, `Constant`, `Static`, `Macro`, `Field`
+
+### Edge types
+`CALLS`, `IMPORTS`, `EXTENDS`, `IMPLEMENTS`, `HAS_METHOD`, `HAS_PROPERTY`,
+`ACCESSES`, `METHOD_OVERRIDES`, `METHOD_IMPLEMENTS`, `CONTAINS`, `DEFINES`,
+`MEMBER_OF`, `STEP_IN_PROCESS`, `HANDLES_ROUTE`
+
+Custom backends can be plugged in by implementing the `GraphStore` trait
+(`ast_line::graph::GraphStore`).
 
 ## Development
 
 ```bash
-cd rust-sniffer
-cargo test          # unit + integration tests (21 tests)
+cd ast-line
+cargo test          # unit + integration tests (30 tests)
 cargo build         # debug build
 cargo build --release  # optimised binary
 ```
