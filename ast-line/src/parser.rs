@@ -7,7 +7,7 @@
 use tree_sitter::{Node, Parser};
 
 use crate::error::SnifferError;
-use crate::symbols::{FileSymbols, Symbol, SymbolKind, UnresolvedCall, Visibility};
+use crate::symbols::{FileSymbols, Symbol, SymbolKind, UnresolvedCall, UnresolvedImport, Visibility};
 
 /// Parse a Rust source file and extract all symbols.
 ///
@@ -31,11 +31,15 @@ pub fn parse_file(path: &str, source: &str, hash: String) -> Result<FileSymbols,
     // Second pass: extract call sites now that we have all symbol line ranges.
     let calls = extract_calls(&root, source.as_bytes(), &symbols);
 
+    // Third pass: extract `use` import declarations.
+    let imports = extract_imports(&root, source.as_bytes());
+
     Ok(FileSymbols {
         path: path.to_owned(),
         hash,
         symbols,
         calls,
+        imports,
     })
 }
 
@@ -429,4 +433,124 @@ fn enclosing_function(line: usize, symbols: &[Symbol]) -> Option<&str> {
         // Pick the narrowest (most-nested) enclosing function.
         .min_by_key(|s| s.end_line - s.start_line)
         .map(|s| s.name.as_str())
+}
+
+// ─── Import extraction ────────────────────────────────────────────────────────
+
+/// Walk the AST and collect all `use_declaration` paths as [`UnresolvedImport`] values.
+///
+/// Each `use` statement may produce one or more imports (e.g. `use a::{B, C}`
+/// expands to two separate imports: `a::B` and `a::C`).
+pub(crate) fn extract_imports(root: &Node<'_>, src: &[u8]) -> Vec<UnresolvedImport> {
+    let mut imports = Vec::new();
+    walk_imports(root, src, &mut imports);
+    imports
+}
+
+/// Recursively walk the AST looking for `use_declaration` nodes.
+fn walk_imports(node: &Node<'_>, src: &[u8], out: &mut Vec<UnresolvedImport>) {
+    if node.kind() == "use_declaration" {
+        let line = node.start_position().row + 1;
+        let mut paths: Vec<(String, bool)> = Vec::new();
+        if let Some(arg) = node.child_by_field_name("argument") {
+            collect_use_paths(&arg, src, "", &mut paths);
+        }
+        for (raw_path, is_glob) in paths {
+            out.push(UnresolvedImport { raw_path, is_glob, line });
+        }
+        // Do not recurse into `use_declaration` children — they are fully
+        // consumed by `collect_use_paths`.
+        return;
+    }
+
+    for i in 0..node.named_child_count() {
+        if let Some(child) = node.named_child(i as u32) {
+            walk_imports(&child, src, out);
+        }
+    }
+}
+
+/// Recursively collect fully-qualified import path strings from a use-clause
+/// node, expanding grouped imports (`use_list`, `scoped_use_list`) into
+/// individual paths.
+///
+/// `prefix` accumulates the path built by enclosing `scoped_use_list` nodes
+/// (e.g. `"crate::models"` when processing the inner list of
+/// `use crate::models::{User, Repo}`).
+fn collect_use_paths(node: &Node<'_>, src: &[u8], prefix: &str, out: &mut Vec<(String, bool)>) {
+    match node.kind() {
+        "identifier" => {
+            let name = node_text(node, src);
+            out.push((join_path(prefix, &name), false));
+        }
+        "scoped_identifier" => {
+            // Full qualified path already encoded in the node text
+            // (e.g. `crate::models::User`).
+            let text = node_text(node, src);
+            out.push((join_path(prefix, &text), false));
+        }
+        "use_wildcard" => {
+            // `use crate::models::*` — the full text already includes the
+            // leading path.  When nested inside a scoped_use_list the `*`
+            // token appears as the only content, so we just append it.
+            let text = node_text(node, src);
+            let full = if text.starts_with("*") && !prefix.is_empty() {
+                format!("{prefix}::*")
+            } else {
+                join_path(prefix, &text)
+            };
+            out.push((full, true));
+        }
+        "use_as_clause" => {
+            // `use foo::Bar as Baz` — only the path before `as` is meaningful
+            // for resolution.
+            if let Some(path_node) = node.child_by_field_name("path") {
+                collect_use_paths(&path_node, src, prefix, out);
+            } else {
+                // Fallback: strip the "as <alias>" suffix from the raw text.
+                let text = node_text(node, src);
+                let clean = text.split(" as ").next().unwrap_or(&text).trim().to_string();
+                out.push((join_path(prefix, &clean), false));
+            }
+        }
+        "use_list" => {
+            // `{a, b, c}` — recurse into each named child.
+            for i in 0..node.named_child_count() {
+                if let Some(child) = node.named_child(i as u32) {
+                    collect_use_paths(&child, src, prefix, out);
+                }
+            }
+        }
+        "scoped_use_list" => {
+            // `crate::models::{User, Repo}` — build a new prefix from the
+            // `path` field and recurse into the `list` field.
+            let new_prefix = if let Some(path_node) = node.child_by_field_name("path") {
+                join_path(prefix, &node_text(&path_node, src))
+            } else {
+                prefix.to_string()
+            };
+            if let Some(list_node) = node.child_by_field_name("list") {
+                collect_use_paths(&list_node, src, &new_prefix, out);
+            }
+        }
+        _ => {
+            // Unknown or future node kind — best-effort: recurse into children.
+            for i in 0..node.named_child_count() {
+                if let Some(child) = node.named_child(i as u32) {
+                    collect_use_paths(&child, src, prefix, out);
+                }
+            }
+        }
+    }
+}
+
+/// Concatenate `prefix` and `suffix` with `::` separator.
+///
+/// Returns `suffix` unchanged when `prefix` is empty.
+fn join_path(prefix: &str, suffix: &str) -> String {
+    if prefix.is_empty() {
+        suffix.to_string()
+    } else {
+        format!("{prefix}::{suffix}")
+    }
 }
