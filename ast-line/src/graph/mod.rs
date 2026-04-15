@@ -43,6 +43,9 @@ pub enum NodeLabel {
     Static,
     Macro,
     Field,
+    Community,
+    Process,
+    Route,
 }
 
 impl std::fmt::Display for NodeLabel {
@@ -60,6 +63,9 @@ impl std::fmt::Display for NodeLabel {
             NodeLabel::Static => "Static",
             NodeLabel::Macro => "Macro",
             NodeLabel::Field => "Field",
+            NodeLabel::Community => "Community",
+            NodeLabel::Process => "Process",
+            NodeLabel::Route => "Route",
         };
         write!(f, "{s}")
     }

@@ -199,6 +199,9 @@ pub fn run_index(opts: &IndexOptions) -> Result<(Vec<FileSymbols>, IndexSummary)
     // Persist the updated graph.
     graph.save(&opts.index_dir)?;
 
+    let communities = crate::community::detect_communities(&graph);
+    let _ = crate::community::save_communities(&opts.index_dir, &communities);
+
     let graph_nodes = graph.node_count();
     let graph_edges = graph.edge_count();
 

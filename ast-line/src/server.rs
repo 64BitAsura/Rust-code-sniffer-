@@ -64,6 +64,10 @@ async fn api_symbols(
     Ok(Json(symbols))
 }
 
+async fn api_communities(State(state): State<AppState>) -> Json<Vec<crate::community::Community>> {
+    Json(crate::community::load_communities(&state.index_dir))
+}
+
 // ─── Public entry point ────────────────────────────────────────────────────
 
 /// Start the HTTP server, block until interrupted.
@@ -87,6 +91,7 @@ pub async fn run_server(
         .route("/", get(serve_ui))
         .route("/api/status", get(api_status))
         .route("/api/symbols", get(api_symbols))
+        .route("/api/communities", get(api_communities))
         .layer(cors)
         .with_state(state);
 
