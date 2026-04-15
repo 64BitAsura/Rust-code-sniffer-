@@ -373,6 +373,41 @@ fn populate_graph(graph: &mut AdjacencyStore, file_syms: &FileSymbols) {
             }
         }
     }
+
+    // ── METHOD_IMPLEMENTS edges for trait method implementations ──────────────
+    for (impl_id, impl_sym) in &sym_ids {
+        if impl_sym.kind == SymbolKind::TraitImpl {
+            if let Some(trait_name) = &impl_sym.trait_name {
+                for (fn_id, fn_sym) in &sym_ids {
+                    if fn_sym.kind != SymbolKind::Function { continue; }
+                    if fn_sym.start_line >= impl_sym.start_line && fn_sym.end_line <= impl_sym.end_line {
+                        let fn_name = &fn_sym.name;
+                        let method_node_id = format!("Function::{trait_name}::{fn_name}");
+                        graph.upsert_node(Node {
+                            id: method_node_id.clone(),
+                            label: NodeLabel::Function,
+                            name: fn_name.clone(),
+                            file_path: String::new(),
+                            start_line: 0,
+                            end_line: 0,
+                        });
+                        let concrete_method_id = format!("Function:{file_path}::{fn_name}");
+                        let edge_id = format!("{concrete_method_id}--METHOD_IMPLEMENTS-->{method_node_id}");
+                        graph.upsert_edge(Edge {
+                            id: edge_id,
+                            source_id: concrete_method_id,
+                            target_id: method_node_id,
+                            edge_type: EdgeType::MethodImplements,
+                            confidence: 1.0,
+                            reason: String::new(),
+                        });
+                        let _ = fn_id;
+                        let _ = impl_id;
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Convert a [`SymbolKind`] to the corresponding [`NodeLabel`].
