@@ -37,5 +37,6 @@ pub mod indexer;
 pub mod meta;
 pub mod parser;
 pub mod process;
+pub mod search;
 pub mod server;
 pub mod symbols;
