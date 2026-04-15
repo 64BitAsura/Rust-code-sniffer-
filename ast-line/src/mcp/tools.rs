@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 use serde_json::Value;
 
-use crate::graph::{AdjacencyStore, GraphStore};
+use crate::graph::{AdjacencyStore, EdgeType, GraphStore};
 use crate::search::{BM25Index, hybrid_search};
 
 pub fn list_tools() -> Vec<Value> {
@@ -20,12 +20,24 @@ pub fn list_tools() -> Vec<Value> {
                 "required": ["query"]
             }
         }),
+        serde_json::json!({
+            "name": "context",
+            "description": "360-degree view of a single symbol: callers, callees, execution flows.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "Symbol name to look up" }
+                },
+                "required": ["name"]
+            }
+        }),
     ]
 }
 
 pub fn call_tool(name: &str, params: Value, index_dir: &PathBuf) -> Result<String, String> {
     match name {
         "query" => tool_query(params, index_dir),
+        "context" => tool_context(params, index_dir),
         _ => Err(format!("Unknown tool: {name}")),
     }
 }
@@ -88,5 +100,42 @@ fn tool_query(params: Value, index_dir: &PathBuf) -> Result<String, String> {
             .collect::<Vec<_>>()
     });
     Ok(output.to_string())
+}
+
+fn tool_context(params: Value, index_dir: &PathBuf) -> Result<String, String> {
+    let name = params["name"].as_str().unwrap_or("").to_owned();
+    let graph = load_graph(index_dir)?;
+
+    let matching_nodes: Vec<_> = graph.nodes()
+        .filter(|n| n.name == name)
+        .map(|n| serde_json::json!({
+            "id": n.id, "label": n.label.to_string(),
+            "file_path": n.file_path, "start_line": n.start_line
+        }))
+        .collect();
+
+    let all_edges: Vec<_> = graph.edges().collect();
+    let callers: Vec<_> = matching_nodes.iter().flat_map(|n| {
+        let node_id = n["id"].as_str().unwrap_or("");
+        all_edges.iter()
+            .filter(|e| e.target_id == node_id && e.edge_type == EdgeType::Calls)
+            .map(|e| e.source_id.clone())
+            .collect::<Vec<_>>()
+    }).collect();
+
+    let callees: Vec<_> = matching_nodes.iter().flat_map(|n| {
+        let node_id = n["id"].as_str().unwrap_or("");
+        all_edges.iter()
+            .filter(|e| e.source_id == node_id && e.edge_type == EdgeType::Calls)
+            .map(|e| e.target_id.clone())
+            .collect::<Vec<_>>()
+    }).collect();
+
+    Ok(serde_json::json!({
+        "name": name,
+        "nodes": matching_nodes,
+        "callers": callers,
+        "callees": callees,
+    }).to_string())
 }
 
