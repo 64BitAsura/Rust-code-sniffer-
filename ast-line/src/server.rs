@@ -64,6 +64,10 @@ async fn api_symbols(
     Ok(Json(symbols))
 }
 
+async fn api_processes(State(state): State<AppState>) -> Json<Vec<crate::process::Process>> {
+    Json(crate::process::load_processes(&state.index_dir))
+}
+
 async fn api_communities(State(state): State<AppState>) -> Json<Vec<crate::community::Community>> {
     Json(crate::community::load_communities(&state.index_dir))
 }
@@ -92,6 +96,7 @@ pub async fn run_server(
         .route("/api/status", get(api_status))
         .route("/api/symbols", get(api_symbols))
         .route("/api/communities", get(api_communities))
+        .route("/api/processes", get(api_processes))
         .layer(cors)
         .with_state(state);
 

@@ -202,6 +202,9 @@ pub fn run_index(opts: &IndexOptions) -> Result<(Vec<FileSymbols>, IndexSummary)
     let communities = crate::community::detect_communities(&graph);
     let _ = crate::community::save_communities(&opts.index_dir, &communities);
 
+    let processes = crate::process::trace_processes(&graph, 8);
+    let _ = crate::process::save_processes(&opts.index_dir, &processes);
+
     let graph_nodes = graph.node_count();
     let graph_edges = graph.edge_count();
 
