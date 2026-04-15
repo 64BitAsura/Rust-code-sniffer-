@@ -44,6 +44,7 @@ pub fn list_tools() -> Vec<Value> {
                 "required": ["target"]
             }
         }),
+        serde_json::json!({"name":"detect_changes","description":"Map git diff to affected symbols.","inputSchema":{"type":"object","properties":{"scope":{"type":"string","enum":["staged","all","compare"],"default":"staged"},"base_ref":{"type":"string"}}}}),
     ]
 }
 
@@ -52,6 +53,7 @@ pub fn call_tool(name: &str, params: Value, index_dir: &PathBuf) -> Result<Strin
         "query" => tool_query(params, index_dir),
         "context" => tool_context(params, index_dir),
         "impact" => tool_impact(params, index_dir),
+        "detect_changes" => tool_detect_changes(params, index_dir),
         _ => Err(format!("Unknown tool: {name}")),
     }
 }
@@ -212,4 +214,22 @@ fn tool_impact(params: Value, index_dir: &PathBuf) -> Result<String, String> {
         "risk_level": risk,
         "direct_callers": upstream.len().saturating_sub(1),
     }).to_string())
+}
+
+fn tool_detect_changes(params: Value, index_dir: &PathBuf) -> Result<String, String> {
+    let scope = params["scope"].as_str().unwrap_or("staged").to_owned();
+    let graph = load_graph(index_dir)?;
+    let git_args: &[&str] = match scope.as_str() {
+        "staged" => &["diff", "--cached", "--name-only"],
+        "all" => &["diff", "HEAD", "--name-only"],
+        _ => &["diff", "--name-only"],
+    };
+    let output = std::process::Command::new("git").args(git_args).output()
+        .map_err(|e| format!("git error: {e}"))?;
+    let changed_files: Vec<String> = String::from_utf8_lossy(&output.stdout)
+        .lines().filter(|l| l.ends_with(".rs")).map(|l| l.to_owned()).collect();
+    let affected: Vec<String> = graph.nodes()
+        .filter(|n| changed_files.iter().any(|f| n.file_path.contains(f.as_str())))
+        .map(|n| n.id.clone()).collect();
+    Ok(serde_json::json!({"scope":scope,"changed_files":changed_files,"affected_symbols":affected,"affected_count":affected.len()}).to_string())
 }
