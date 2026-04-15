@@ -158,6 +158,7 @@ mod tests {
             file_path: String::new(),
             start_line: 0,
             end_line: 0,
+            entry_point_score: 0.0,
         }
     }
 
@@ -169,6 +170,7 @@ mod tests {
             file_path: file.to_string(),
             start_line: start,
             end_line: end,
+            entry_point_score: 0.0,
         }
     }
 

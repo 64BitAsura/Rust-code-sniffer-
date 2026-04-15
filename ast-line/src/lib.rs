@@ -23,6 +23,7 @@
 //!     index_dir: PathBuf::from(".ast-line"),
 //!     incremental: true,
 //!     verbose: false,
+//!     generate_embeddings: false,
 //! };
 //!
 //! let (symbols, summary) = run_index(&opts).unwrap();
