@@ -32,6 +32,7 @@
 pub mod community;
 pub mod embeddings;
 pub mod error;
+pub mod group;
 pub mod graph;
 pub mod incremental;
 pub mod indexer;

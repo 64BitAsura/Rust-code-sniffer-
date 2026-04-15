@@ -306,3 +306,28 @@ fn tool_list_repos(index_dir: &PathBuf) -> Result<String, String> {
     let repos: Vec<_> = registry.list().iter().map(|r| serde_json::json!({"name":r.name,"root":r.root,"index_dir":r.index_dir,"description":r.description})).collect();
     Ok(serde_json::json!({"repos":repos}).to_string())
 }
+
+fn tool_group_list(index_dir: &PathBuf) -> Result<String, String> {
+    let cfg = crate::group::GroupConfig::load(index_dir);
+    let groups: Vec<_> = cfg.groups.values().map(|g| serde_json::json!({"name":g.name,"description":g.description,"repo_count":g.repos.len()})).collect();
+    Ok(serde_json::json!({"groups":groups}).to_string())
+}
+fn tool_group_query(params: Value, index_dir: &PathBuf) -> Result<String, String> {
+    let group = params["group"].as_str().unwrap_or("").to_owned();
+    let query = params["query"].as_str().unwrap_or("").to_owned();
+    let cfg = crate::group::GroupConfig::load(index_dir);
+    let repos: Vec<_> = cfg.groups.get(&group).map(|g| g.repos.clone()).unwrap_or_default();
+    Ok(serde_json::json!({"group":group,"query":query,"repos":repos.iter().map(|r| r.name.clone()).collect::<Vec<_>>(),"message":"Cross-repo query support requires individual repo indexes."}).to_string())
+}
+fn tool_group_contracts(params: Value, index_dir: &PathBuf) -> Result<String, String> {
+    let group = params["group"].as_str().unwrap_or("").to_owned();
+    let cfg = crate::group::GroupConfig::load(index_dir);
+    let contracts = cfg.groups.get(&group).map(|g| g.contracts.clone()).unwrap_or_default();
+    Ok(serde_json::json!({"group":group,"contracts":contracts}).to_string())
+}
+fn tool_group_status(params: Value, index_dir: &PathBuf) -> Result<String, String> {
+    let group = params["group"].as_str().unwrap_or("").to_owned();
+    let cfg = crate::group::GroupConfig::load(index_dir);
+    let repos: Vec<_> = cfg.groups.get(&group).map(|g| g.repos.iter().map(|r| serde_json::json!({"name":r.name,"indexed":std::path::Path::new(&r.index_dir).exists()})).collect()).unwrap_or_default();
+    Ok(serde_json::json!({"group":group,"repos":repos}).to_string())
+}
