@@ -30,6 +30,7 @@
 //! println!("{} symbols found in {} files", summary.total_symbols, summary.total_files);
 //! ```
 
+pub mod augment;
 pub mod community;
 pub mod embeddings;
 pub mod error;

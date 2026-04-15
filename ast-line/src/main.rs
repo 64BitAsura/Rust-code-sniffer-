@@ -104,6 +104,29 @@ enum Commands {
         #[arg(long, default_value = ".ast-line")]
         index_dir: PathBuf,
     },
+
+    /// Enrich community and process labels with AI-generated descriptions.
+    Augment {
+        /// Directory where the index state is stored.
+        #[arg(long, default_value = ".ast-line")]
+        index_dir: PathBuf,
+
+        /// LLM provider name (e.g. openai, anthropic).
+        #[arg(long, default_value = "openai")]
+        provider: String,
+
+        /// Model identifier (e.g. gpt-4o-mini).
+        #[arg(long, default_value = "gpt-4o-mini")]
+        model: String,
+
+        /// Maximum number of LLM API calls to make (0 = unlimited).
+        #[arg(long, default_value_t = 0)]
+        max_calls: usize,
+
+        /// Print progress to stderr.
+        #[arg(short, long, default_value_t = false)]
+        verbose: bool,
+    },
 }
 
 fn main() {
@@ -278,6 +301,41 @@ fn main() {
 
         Commands::Mcp { index_dir } => {
             ast_line::mcp::server::run_mcp(index_dir.clone());
+        }
+
+        Commands::Augment {
+            index_dir,
+            provider,
+            model,
+            max_calls,
+            verbose,
+        } => {
+            use ast_line::augment::{run_augment, AugmentConfig};
+
+            let mut config = match AugmentConfig::from_env(provider, model, *verbose) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    process::exit(1);
+                }
+            };
+            config.max_calls = *max_calls;
+
+            match run_augment(index_dir, &config) {
+                Ok(summary) => {
+                    println!(
+                        "Augmented {} community label(s) and {} process label(s) \
+                         ({} LLM call(s) made).",
+                        summary.community_enriched,
+                        summary.process_enriched,
+                        summary.total_llm_calls,
+                    );
+                }
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    process::exit(1);
+                }
+            }
         }
     }
 }
