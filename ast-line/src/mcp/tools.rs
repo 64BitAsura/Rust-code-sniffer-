@@ -47,6 +47,9 @@ pub fn list_tools() -> Vec<Value> {
         serde_json::json!({"name":"detect_changes","description":"Map git diff to affected symbols.","inputSchema":{"type":"object","properties":{"scope":{"type":"string","enum":["staged","all","compare"],"default":"staged"},"base_ref":{"type":"string"}}}}),
         serde_json::json!({"name":"rename","description":"Graph-aware multi-file rename with dry-run.","inputSchema":{"type":"object","properties":{"symbol_name":{"type":"string"},"new_name":{"type":"string"},"dry_run":{"type":"boolean","default":true}},"required":["symbol_name","new_name"]}}),
         serde_json::json!({"name":"cypher","description":"Raw graph query execution.","inputSchema":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}}),
+        serde_json::json!({"name":"route_map","description":"List all HTTP routes.","inputSchema":{"type":"object","properties":{}}}),
+        serde_json::json!({"name":"shape_check","description":"Check route handler signatures.","inputSchema":{"type":"object","properties":{}}}),
+        serde_json::json!({"name":"api_impact","description":"Blast radius of changing a route.","inputSchema":{"type":"object","properties":{"route":{"type":"string"}},"required":["route"]}}),
     ]
 }
 
@@ -58,6 +61,9 @@ pub fn call_tool(name: &str, params: Value, index_dir: &PathBuf) -> Result<Strin
         "detect_changes" => tool_detect_changes(params, index_dir),
         "rename" => tool_rename(params, index_dir),
         "cypher" => tool_cypher(params, index_dir),
+        "route_map" => tool_route_map(index_dir),
+        "shape_check" => tool_shape_check(index_dir),
+        "api_impact" => tool_api_impact(params, index_dir),
         _ => Err(format!("Unknown tool: {name}")),
     }
 }
@@ -268,4 +274,27 @@ fn tool_cypher(params: Value, index_dir: &PathBuf) -> Result<String, String> {
     } else {
         Ok(serde_json::json!({"query":query,"error":"Only simple MATCH...RETURN queries are supported"}).to_string())
     }
+}
+
+fn tool_route_map(index_dir: &PathBuf) -> Result<String, String> {
+    let graph = load_graph(index_dir)?;
+    let routes: Vec<_> = graph.nodes().filter(|n| n.label == crate::graph::NodeLabel::Route)
+        .map(|n| serde_json::json!({"id":n.id,"handler":n.name,"file_path":n.file_path,"line":n.start_line})).collect();
+    let count = routes.len();
+    Ok(serde_json::json!({"routes":routes,"count":count}).to_string())
+}
+
+fn tool_shape_check(index_dir: &PathBuf) -> Result<String, String> {
+    let graph = load_graph(index_dir)?;
+    let route_nodes: Vec<_> = graph.nodes().filter(|n| n.label == crate::graph::NodeLabel::Route).collect();
+    let checked = route_nodes.len();
+    let all_edges: Vec<_> = graph.edges().collect();
+    let issues: Vec<_> = route_nodes.iter().filter(|r| !all_edges.iter().any(|e| e.source_id == r.id && e.edge_type == EdgeType::HandlesRoute))
+        .map(|r| serde_json::json!({"route":r.id,"issue":"No handler function found"})).collect();
+    Ok(serde_json::json!({"checked":checked,"issues":issues}).to_string())
+}
+
+fn tool_api_impact(params: Value, index_dir: &PathBuf) -> Result<String, String> {
+    let route = params["route"].as_str().unwrap_or("").to_owned();
+    tool_impact(serde_json::json!({"target":route,"direction":"downstream","depth":5}), index_dir)
 }
