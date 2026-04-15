@@ -2,6 +2,8 @@ pub mod bm25;
 pub use bm25::{BM25Index, SearchResult};
 
 /// Reciprocal Rank Fusion constant (typically 60).
+///
+/// Higher values reduce the score differences between ranks.
 const RRF_K: f64 = 60.0;
 
 /// Merge two ranked lists using Reciprocal Rank Fusion.
