@@ -35,6 +35,7 @@ pub mod error;
 pub mod graph;
 pub mod incremental;
 pub mod indexer;
+pub mod mcp;
 pub mod meta;
 pub mod parser;
 pub mod process;

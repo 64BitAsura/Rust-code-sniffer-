@@ -97,6 +97,13 @@ enum Commands {
         #[arg(long, default_value = "localhost")]
         host: String,
     },
+
+    /// Start the Model Context Protocol server over stdio.
+    Mcp {
+        /// Directory where the index state is stored.
+        #[arg(long, default_value = ".ast-line")]
+        index_dir: PathBuf,
+    },
 }
 
 fn main() {
@@ -267,6 +274,10 @@ fn main() {
                 eprintln!("error: {e}");
                 process::exit(1);
             }
+        }
+
+        Commands::Mcp { index_dir } => {
+            ast_line::mcp::server::run_mcp(index_dir.clone());
         }
     }
 }
