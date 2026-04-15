@@ -31,6 +31,19 @@ pub fn list_tools() -> Vec<Value> {
                 "required": ["name"]
             }
         }),
+        serde_json::json!({
+            "name": "impact",
+            "description": "Upstream/downstream blast radius analysis for a symbol.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "target": { "type": "string", "description": "Symbol name" },
+                    "direction": { "type": "string", "enum": ["upstream", "downstream", "both"], "default": "upstream" },
+                    "depth": { "type": "integer", "default": 3 }
+                },
+                "required": ["target"]
+            }
+        }),
     ]
 }
 
@@ -38,6 +51,7 @@ pub fn call_tool(name: &str, params: Value, index_dir: &PathBuf) -> Result<Strin
     match name {
         "query" => tool_query(params, index_dir),
         "context" => tool_context(params, index_dir),
+        "impact" => tool_impact(params, index_dir),
         _ => Err(format!("Unknown tool: {name}")),
     }
 }
@@ -139,3 +153,63 @@ fn tool_context(params: Value, index_dir: &PathBuf) -> Result<String, String> {
     }).to_string())
 }
 
+
+fn tool_impact(params: Value, index_dir: &PathBuf) -> Result<String, String> {
+    let target = params["target"].as_str().unwrap_or("").to_owned();
+    let direction = params["direction"].as_str().unwrap_or("upstream").to_owned();
+    let depth = params["depth"].as_u64().unwrap_or(3) as usize;
+
+    let graph = load_graph(index_dir)?;
+    let target_ids: Vec<String> = graph.nodes()
+        .filter(|n| n.name == target)
+        .map(|n| n.id.clone())
+        .collect();
+
+    let mut upstream: Vec<String> = Vec::new();
+    let mut downstream: Vec<String> = Vec::new();
+    let edges: Vec<_> = graph.edges()
+        .filter(|e| e.edge_type == EdgeType::Calls)
+        .map(|e| (e.source_id.clone(), e.target_id.clone()))
+        .collect();
+
+    for target_id in &target_ids {
+        if direction == "upstream" || direction == "both" {
+            let mut visited = std::collections::HashSet::new();
+            let mut queue = std::collections::VecDeque::new();
+            queue.push_back((target_id.clone(), 0usize));
+            while let Some((id, d)) = queue.pop_front() {
+                if d > depth || visited.contains(&id) { continue; }
+                visited.insert(id.clone());
+                upstream.push(id.clone());
+                for (src, tgt) in &edges {
+                    if tgt == &id && !visited.contains(src) {
+                        queue.push_back((src.clone(), d + 1));
+                    }
+                }
+            }
+        }
+        if direction == "downstream" || direction == "both" {
+            let mut visited = std::collections::HashSet::new();
+            let mut queue = std::collections::VecDeque::new();
+            queue.push_back((target_id.clone(), 0usize));
+            while let Some((id, d)) = queue.pop_front() {
+                if d > depth || visited.contains(&id) { continue; }
+                visited.insert(id.clone());
+                downstream.push(id.clone());
+                for (src, tgt) in &edges {
+                    if src == &id && !visited.contains(tgt) {
+                        queue.push_back((tgt.clone(), d + 1));
+                    }
+                }
+            }
+        }
+    }
+
+    let risk = if upstream.len() > 10 { "HIGH" } else if upstream.len() > 3 { "MEDIUM" } else { "LOW" };
+    Ok(serde_json::json!({
+        "target": target, "direction": direction,
+        "upstream": upstream, "downstream": downstream,
+        "risk_level": risk,
+        "direct_callers": upstream.len().saturating_sub(1),
+    }).to_string())
+}
