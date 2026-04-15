@@ -191,6 +191,11 @@ pub fn run_index(opts: &IndexOptions) -> Result<(Vec<FileSymbols>, IndexSummary)
         resolve_imports(&mut graph, file_syms, &all_file_paths);
     }
 
+    // ── 9d. Resolve ACCESSES edges ────────────────────────────────────────────
+    for file_syms in &results {
+        resolve_accesses(&mut graph, file_syms, &name_index);
+    }
+
     // Persist the updated graph.
     graph.save(&opts.index_dir)?;
 
@@ -459,6 +464,7 @@ fn build_name_index(all_files: &[FileSymbols]) -> HashMap<String, Vec<String>> {
                     | SymbolKind::Struct
                     | SymbolKind::Enum
                     | SymbolKind::Macro
+                    | SymbolKind::Field
             ) {
                 continue;
             }
@@ -557,10 +563,37 @@ fn resolve_imports(
     }
 }
 
+// ─── ACCESSES edge helpers ─────────────────────────────────────────────────────
+
+/// Emit `ACCESSES` edges from the field access sites in `file_syms` into `graph`.
+fn resolve_accesses(
+    graph: &mut AdjacencyStore,
+    file_syms: &FileSymbols,
+    name_index: &HashMap<String, Vec<String>>,
+) {
+    let file_path = &file_syms.path;
+    for access in &file_syms.accesses {
+        if access.accessor_fn.is_empty() { continue; }
+        let accessor_id = format!("Function:{file_path}::{}", access.accessor_fn);
+        let candidates = match name_index.get(&access.field_name) {
+            Some(c) if !c.is_empty() => c,
+            _ => continue,
+        };
+        for field_id in candidates {
+            let edge_id = format!("{accessor_id}--ACCESSES-->{field_id}:L{}", access.line);
+            graph.upsert_edge(Edge {
+                id: edge_id,
+                source_id: accessor_id.clone(),
+                target_id: field_id.clone(),
+                edge_type: EdgeType::Accesses,
+                confidence: 0.8,
+                reason: if access.is_write { "field-write".to_owned() } else { "field-read".to_owned() },
+            });
+        }
+    }
+}
+
 /// Resolve a single import path string to a canonical file path.
-///
-/// Handles `crate::`, `super::`, `self::` prefixes and bare `::` paths.
-/// Returns `None` when no matching file is found in `all_files`.
 fn resolve_import_path(
     current_file: &str,
     raw_path: &str,

@@ -7,7 +7,7 @@
 use tree_sitter::{Node, Parser};
 
 use crate::error::SnifferError;
-use crate::symbols::{FileSymbols, Symbol, SymbolKind, UnresolvedCall, UnresolvedImport, Visibility};
+use crate::symbols::{FileSymbols, RouteAnnotation, Symbol, SymbolKind, UnresolvedAccess, UnresolvedCall, UnresolvedImport, Visibility};
 
 /// Parse a Rust source file and extract all symbols.
 ///
@@ -34,12 +34,20 @@ pub fn parse_file(path: &str, source: &str, hash: String) -> Result<FileSymbols,
     // Third pass: extract `use` import declarations.
     let imports = extract_imports(&root, source.as_bytes());
 
+    // Fourth pass: extract field accesses.
+    let accesses = extract_accesses(&root, source.as_bytes(), &symbols);
+
+    // Fifth pass: extract HTTP route annotations.
+    let routes = extract_routes(&root, source.as_bytes(), &symbols);
+
     Ok(FileSymbols {
         path: path.to_owned(),
         hash,
         symbols,
         calls,
         imports,
+        accesses,
+        routes,
     })
 }
 
@@ -552,5 +560,85 @@ fn join_path(prefix: &str, suffix: &str) -> String {
         suffix.to_string()
     } else {
         format!("{prefix}::{suffix}")
+    }
+}
+
+// ─── Field access extraction ──────────────────────────────────────────────────
+
+pub(crate) fn extract_accesses(root: &Node<'_>, src: &[u8], symbols: &[Symbol]) -> Vec<UnresolvedAccess> {
+    let mut accesses = Vec::new();
+    walk_accesses(root, src, symbols, &mut accesses);
+    accesses
+}
+
+fn walk_accesses(node: &Node<'_>, src: &[u8], symbols: &[Symbol], out: &mut Vec<UnresolvedAccess>) {
+    if node.kind() == "field_expression" {
+        let line = node.start_position().row + 1;
+        let accessor_fn = enclosing_function(line, symbols).unwrap_or("").to_owned();
+        let child_count = node.named_child_count();
+        if child_count > 0 {
+            if let Some(field_node) = node.named_child((child_count - 1) as u32) {
+                let field_name = node_text(&field_node, src);
+                if !field_name.is_empty() && !accessor_fn.is_empty() {
+                    let is_write = node.parent()
+                        .map(|p| p.kind() == "assignment_expression" || p.kind() == "compound_assignment_expr")
+                        .unwrap_or(false);
+                    out.push(UnresolvedAccess {
+                        accessor_fn,
+                        field_name,
+                        is_write,
+                        line,
+                    });
+                }
+            }
+        }
+    }
+    for i in 0..node.named_child_count() {
+        if let Some(child) = node.named_child(i as u32) {
+            walk_accesses(&child, src, symbols, out);
+        }
+    }
+}
+
+// ─── HTTP route extraction ────────────────────────────────────────────────────
+
+pub(crate) fn extract_routes(root: &Node<'_>, src: &[u8], symbols: &[Symbol]) -> Vec<RouteAnnotation> {
+    let mut routes = Vec::new();
+    walk_routes(root, src, symbols, &mut routes);
+    routes
+}
+
+fn walk_routes(node: &Node<'_>, src: &[u8], symbols: &[Symbol], out: &mut Vec<RouteAnnotation>) {
+    if node.kind() == "macro_invocation" {
+        let line = node.start_position().row + 1;
+        let macro_name = node.child_by_field_name("macro")
+            .map(|n| node_text(&n, src))
+            .unwrap_or_default();
+        let http_methods = ["get", "post", "put", "patch", "delete", "options", "head"];
+        if http_methods.contains(&macro_name.as_str()) {
+            if let Some(args) = node.child_by_field_name("token_tree") {
+                let raw = node_text(&args, src);
+                let handler_fn = raw.trim_matches(|c| c == '(' || c == ')' || c == ' ').to_owned();
+                if !handler_fn.is_empty() {
+                    let handler = if handler_fn.contains(',') {
+                        handler_fn.split(',').next().unwrap_or(&handler_fn).trim().to_owned()
+                    } else {
+                        handler_fn
+                    };
+                    let _enc = enclosing_function(line, symbols);
+                    out.push(RouteAnnotation {
+                        method: macro_name.to_uppercase(),
+                        path: String::new(),
+                        handler_fn: handler,
+                        line,
+                    });
+                }
+            }
+        }
+    }
+    for i in 0..node.named_child_count() {
+        if let Some(child) = node.named_child(i as u32) {
+            walk_routes(&child, src, symbols, out);
+        }
     }
 }
