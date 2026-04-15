@@ -27,6 +27,8 @@ pub struct IndexOptions {
     pub incremental: bool,
     /// When `true`, emit progress messages to stderr.
     pub verbose: bool,
+    /// When `true`, generate vector embeddings for symbols.
+    pub generate_embeddings: bool,
 }
 
 /// Summary of an indexing run.

@@ -30,6 +30,7 @@
 //! ```
 
 pub mod community;
+pub mod embeddings;
 pub mod error;
 pub mod graph;
 pub mod incremental;

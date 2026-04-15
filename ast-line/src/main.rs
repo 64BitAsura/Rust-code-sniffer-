@@ -48,6 +48,10 @@ enum Commands {
         /// Pretty-print the JSON output.
         #[arg(short, long, default_value_t = false)]
         pretty: bool,
+
+        /// Generate vector embeddings for symbols.
+        #[arg(long, default_value_t = false)]
+        embeddings: bool,
     },
 
     /// Show which files would be re-parsed if `index --incremental` were run.
@@ -105,12 +109,14 @@ fn main() {
             incremental,
             verbose,
             pretty,
+            embeddings,
         } => {
             let opts = IndexOptions {
                 root: root.clone(),
                 index_dir: index_dir.clone(),
                 incremental: *incremental,
                 verbose: *verbose,
+                generate_embeddings: *embeddings,
             };
 
             match run_index(&opts) {
