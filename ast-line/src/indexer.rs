@@ -196,6 +196,9 @@ pub fn run_index(opts: &IndexOptions) -> Result<(Vec<FileSymbols>, IndexSummary)
         resolve_accesses(&mut graph, file_syms, &name_index);
     }
 
+    // ── 9e. Score entry points ────────────────────────────────────────────────
+    score_entry_points(&mut graph, &results);
+
     // Persist the updated graph.
     graph.save(&opts.index_dir)?;
 
@@ -286,6 +289,7 @@ fn populate_graph(graph: &mut AdjacencyStore, file_syms: &FileSymbols) {
         file_path: String::new(),
         start_line: 0,
         end_line: 0,
+        entry_point_score: 0.0,
     });
 
     // ── Symbol nodes + DEFINES edges ──────────────────────────────────────────
@@ -308,6 +312,7 @@ fn populate_graph(graph: &mut AdjacencyStore, file_syms: &FileSymbols) {
             file_path: file_path.clone(),
             start_line: sym.start_line,
             end_line: sym.end_line,
+            entry_point_score: 0.0,
         });
 
         // File DEFINES every top-level symbol.
@@ -371,6 +376,7 @@ fn populate_graph(graph: &mut AdjacencyStore, file_syms: &FileSymbols) {
                     file_path: String::new(),
                     start_line: 0,
                     end_line: 0,
+                    entry_point_score: 0.0,
                 });
                 let edge_id = format!("{impl_id}--IMPLEMENTS-->{trait_node_id}");
                 graph.upsert_edge(Edge {
@@ -401,6 +407,7 @@ fn populate_graph(graph: &mut AdjacencyStore, file_syms: &FileSymbols) {
                             file_path: String::new(),
                             start_line: 0,
                             end_line: 0,
+                            entry_point_score: 0.0,
                         });
                         let concrete_method_id = format!("Function:{file_path}::{fn_name}");
                         let edge_id = format!("{concrete_method_id}--METHOD_IMPLEMENTS-->{method_node_id}");
@@ -418,6 +425,34 @@ fn populate_graph(graph: &mut AdjacencyStore, file_syms: &FileSymbols) {
                 }
             }
         }
+    }
+}
+
+/// Score entry-point functions (no callers or named `main`) with 1.0.
+fn score_entry_points(graph: &mut AdjacencyStore, _all_files: &[FileSymbols]) {
+    let edge_data: Vec<(EdgeType, String, String)> = graph
+        .edges()
+        .map(|e| (e.edge_type.clone(), e.source_id.clone(), e.target_id.clone()))
+        .collect();
+    let mut in_degree: HashMap<String, usize> = HashMap::new();
+    for (etype, _, target) in &edge_data {
+        if *etype == EdgeType::Calls {
+            *in_degree.entry(target.clone()).or_insert(0) += 1;
+        }
+    }
+
+    let candidate_nodes: Vec<crate::graph::Node> = graph
+        .nodes()
+        .filter(|n| {
+            n.label == NodeLabel::Function
+                && (*in_degree.get(&n.id).unwrap_or(&0) == 0 || n.name == "main")
+        })
+        .cloned()
+        .collect();
+
+    for mut node in candidate_nodes {
+        node.entry_point_score = 1.0;
+        graph.upsert_node(node);
     }
 }
 

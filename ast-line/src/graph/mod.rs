@@ -132,6 +132,9 @@ pub struct Node {
     pub start_line: usize,
     /// 1-based end line in the source file (0 for `File` nodes).
     pub end_line: usize,
+    /// Entry-point score: 1.0 for functions with no callers (entry points), 0.0 otherwise.
+    #[serde(default)]
+    pub entry_point_score: f64,
 }
 
 /// A directed edge between two nodes.
