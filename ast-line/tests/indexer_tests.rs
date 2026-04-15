@@ -203,6 +203,7 @@ fn full_index_discovers_all_files() {
         incremental: false,
         verbose:     false,
     generate_embeddings: false,
+        no_parallel: false,
     };
 
     let (symbols, summary) = run_index(&opts).unwrap();
@@ -238,6 +239,7 @@ fn incremental_index_skips_unchanged_files() {
         incremental: true,
         verbose:     false,
     generate_embeddings: false,
+        no_parallel: false,
     };
 
     // First run — everything is parsed.
@@ -268,6 +270,7 @@ fn incremental_index_reparses_changed_file() {
         incremental: true,
         verbose:     false,
     generate_embeddings: false,
+        no_parallel: false,
     };
 
     // Initial index.
@@ -302,6 +305,7 @@ fn incremental_index_tracks_new_files() {
         incremental: true,
         verbose:     false,
     generate_embeddings: false,
+        no_parallel: false,
     };
 
     run_index(&opts).unwrap();
@@ -341,6 +345,7 @@ fn incremental_index_handles_deleted_file() {
         incremental: true,
         verbose:     false,
     generate_embeddings: false,
+        no_parallel: false,
     };
 
     run_index(&opts).unwrap();
@@ -385,6 +390,7 @@ fn index_populates_graph_directory() {
         incremental: false,
         verbose:     false,
     generate_embeddings: false,
+        no_parallel: false,
     };
 
     let (_, summary) = run_index(&opts).unwrap();
@@ -421,6 +427,7 @@ fn graph_node_count_reported_in_summary() {
         incremental: false,
         verbose:     false,
     generate_embeddings: false,
+        no_parallel: false,
     };
 
     let (_, summary) = run_index(&opts).unwrap();
@@ -448,6 +455,7 @@ fn incremental_index_purges_stale_graph_nodes() {
         incremental: true,
         verbose:     false,
     generate_embeddings: false,
+        no_parallel: false,
     };
 
     // First run populates the graph.
@@ -478,6 +486,7 @@ fn graph_persists_across_runs() {
         incremental: true,
         verbose:     false,
     generate_embeddings: false,
+        no_parallel: false,
     };
 
     run_index(&opts).unwrap();
@@ -568,6 +577,7 @@ pub fn caller() {
         incremental: false,
         verbose:     false,
     generate_embeddings: false,
+        no_parallel: false,
     };
 
     let (_, summary) = run_index(&opts).unwrap();
@@ -619,6 +629,7 @@ fn main() {
         incremental: false,
         verbose:     false,
     generate_embeddings: false,
+        no_parallel: false,
     };
 
     run_index(&opts).unwrap();
@@ -667,6 +678,7 @@ fn caller() {
         incremental: false,
         verbose:     false,
     generate_embeddings: false,
+        no_parallel: false,
     };
 
     run_index(&opts).unwrap();
@@ -777,6 +789,7 @@ fn indexer_emits_imports_edge_for_crate_use() {
         incremental: false,
         verbose:     false,
     generate_embeddings: false,
+        no_parallel: false,
     };
 
     run_index(&opts).unwrap();
@@ -829,6 +842,7 @@ fn indexer_emits_imports_edge_with_lower_confidence_for_glob() {
         incremental: false,
         verbose:     false,
     generate_embeddings: false,
+        no_parallel: false,
     };
 
     run_index(&opts).unwrap();

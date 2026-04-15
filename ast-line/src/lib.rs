@@ -24,6 +24,7 @@
 //!     incremental: true,
 //!     verbose: false,
 //!     generate_embeddings: false,
+//!     no_parallel: false,
 //! };
 //!
 //! let (symbols, summary) = run_index(&opts).unwrap();

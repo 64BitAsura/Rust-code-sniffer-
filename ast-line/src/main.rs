@@ -52,6 +52,10 @@ enum Commands {
         /// Generate vector embeddings for symbols.
         #[arg(long, default_value_t = false)]
         embeddings: bool,
+
+        /// Disable parallel parsing (use sequential mode for debugging).
+        #[arg(long, default_value_t = false)]
+        no_parallel: bool,
     },
 
     /// Show which files would be re-parsed if `index --incremental` were run.
@@ -140,6 +144,7 @@ fn main() {
             verbose,
             pretty,
             embeddings,
+            no_parallel,
         } => {
             let opts = IndexOptions {
                 root: root.clone(),
@@ -147,6 +152,7 @@ fn main() {
                 incremental: *incremental,
                 verbose: *verbose,
                 generate_embeddings: *embeddings,
+                no_parallel: *no_parallel,
             };
 
             match run_index(&opts) {

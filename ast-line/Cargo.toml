@@ -47,5 +47,8 @@ chrono = { version = "0.4", features = ["serde"] }
 
 reqwest = { version = "0.12", features = ["json"] }
 
+# Parallel parsing
+rayon = "1"
+
 [dev-dependencies]
 tempfile = "3"

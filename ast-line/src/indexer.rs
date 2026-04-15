@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use rayon::prelude::*;
 use walkdir::WalkDir;
 
 use crate::error::SnifferError;
@@ -29,6 +30,9 @@ pub struct IndexOptions {
     pub verbose: bool,
     /// When `true`, generate vector embeddings for symbols.
     pub generate_embeddings: bool,
+    /// When `true`, disable parallel parsing (rayon) and fall back to
+    /// sequential mode. Useful for debugging or constrained environments.
+    pub no_parallel: bool,
 }
 
 /// Summary of an indexing run.
@@ -90,10 +94,6 @@ pub fn run_index(opts: &IndexOptions) -> Result<(Vec<FileSymbols>, IndexSummary)
     };
 
     // ── 6. Parse changed files ────────────────────────────────────────────────
-    let mut results: Vec<FileSymbols> = Vec::with_capacity(total_files);
-    let mut parsed_count = 0usize;
-    let mut skipped_count = 0usize;
-
     // Build a map from canonical path → raw content for changed files.
     let changed_set: std::collections::HashSet<String> = diff
         .changed
@@ -101,42 +101,79 @@ pub fn run_index(opts: &IndexOptions) -> Result<(Vec<FileSymbols>, IndexSummary)
         .map(|p| canonical_key(p, &opts.root))
         .collect();
 
+    // Separate file_data into three buckets:
+    //   (a) changed  — must (re-)parse
+    //   (b) cached   — reuse existing FileSymbols
+    //   (c) fallback — hash matched but no cache; treat as changed
+    let mut to_parse: Vec<(String, Vec<u8>, String)> = Vec::new(); // (path, content, hash)
+    let mut cached_results: Vec<FileSymbols> = Vec::new();
+    let mut skipped_count = 0usize;
+
     for (canonical, content) in &file_data {
         if changed_set.contains(canonical) {
-            // This file is new or modified — parse it.
             let hash = diff.hashes[canonical].clone();
-            let source = String::from_utf8_lossy(content);
-            if opts.verbose {
-                eprintln!("  parsing  {canonical}");
-            }
-            match parse_file(canonical, &source, hash) {
-                Ok(fs) => results.push(fs),
-                Err(e) => {
-                    eprintln!("  warning: skipping {canonical} — {e}");
-                }
-            }
-            parsed_count += 1;
+            to_parse.push((canonical.clone(), content.clone(), hash));
         } else if let Some(cached_fs) = cached.get(canonical) {
-            // Unchanged — reuse cached symbols.
             if opts.verbose {
                 eprintln!("  cached   {canonical}");
             }
-            results.push(cached_fs.clone());
+            cached_results.push(cached_fs.clone());
             skipped_count += 1;
         } else {
-            // No cache available even though hash matched (shouldn't happen in normal
-            // operation, but handle gracefully by re-parsing).
+            // No cache — re-parse.
             let hash = diff.hashes[canonical].clone();
-            let source = String::from_utf8_lossy(content);
-            if opts.verbose {
-                eprintln!("  reparse  {canonical} (no cache)");
-            }
-            if let Ok(fs) = parse_file(canonical, &source, hash) {
-                results.push(fs);
-            }
-            parsed_count += 1;
+            to_parse.push((canonical.clone(), content.clone(), hash));
         }
     }
+
+    let parsed_count = to_parse.len();
+
+    // Parse the changed files — in parallel unless --no-parallel was requested.
+    let mut newly_parsed: Vec<FileSymbols> = if opts.no_parallel {
+        // Sequential path (--no-parallel escape hatch).
+        to_parse
+            .iter()
+            .filter_map(|(canonical, content, hash)| {
+                let source = String::from_utf8_lossy(content);
+                if opts.verbose {
+                    eprintln!("  parsing  {canonical}");
+                }
+                match parse_file(canonical, &source, hash.clone()) {
+                    Ok(fs) => Some(fs),
+                    Err(e) => {
+                        eprintln!("  warning: skipping {canonical} — {e}");
+                        None
+                    }
+                }
+            })
+            .collect()
+    } else {
+        // Parallel path — rayon distributes work across the thread pool.
+        // Results may arrive in arbitrary order; we sort by path afterwards
+        // to ensure deterministic output.
+        let mut parsed: Vec<FileSymbols> = to_parse
+            .par_iter()
+            .filter_map(|(canonical, content, hash)| {
+                let source = String::from_utf8_lossy(content);
+                match parse_file(canonical, &source, hash.clone()) {
+                    Ok(fs) => Some(fs),
+                    Err(e) => {
+                        eprintln!("  warning: skipping {canonical} — {e}");
+                        None
+                    }
+                }
+            })
+            .collect();
+        // Restore deterministic ordering.
+        parsed.sort_by(|a, b| a.path.cmp(&b.path));
+        parsed
+    };
+
+    // Merge: cached first (already sorted from previous run), then newly parsed.
+    let mut results: Vec<FileSymbols> = cached_results;
+    results.append(&mut newly_parsed);
+    // Final sort to keep the overall list deterministic across runs.
+    results.sort_by(|a, b| a.path.cmp(&b.path));
 
     // ── 7. Purge stale entries from state ─────────────────────────────────────
     let current_keys: Vec<String> = file_data.iter().map(|(k, _)| k.clone()).collect();
