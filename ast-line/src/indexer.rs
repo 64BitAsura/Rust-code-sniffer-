@@ -426,6 +426,36 @@ fn populate_graph(graph: &mut AdjacencyStore, file_syms: &FileSymbols) {
             }
         }
     }
+
+    // ── Route nodes ───────────────────────────────────────────────────────────
+    emit_route_nodes(graph, file_syms);
+}
+
+/// Emit `Route` nodes and `HANDLES_ROUTE` edges for HTTP route annotations.
+fn emit_route_nodes(graph: &mut AdjacencyStore, file_syms: &FileSymbols) {
+    let file_path = &file_syms.path;
+    for route in &file_syms.routes {
+        let route_id = format!("Route:{file_path}::{}:{}", route.method, route.handler_fn);
+        graph.upsert_node(Node {
+            id: route_id.clone(),
+            label: NodeLabel::Route,
+            name: route.handler_fn.clone(),
+            file_path: file_path.clone(),
+            start_line: route.line,
+            end_line: route.line,
+            entry_point_score: 0.0,
+        });
+        let handler_node_id = format!("Function:{file_path}::{}", route.handler_fn);
+        let edge_id = format!("{route_id}--HANDLES_ROUTE-->{handler_node_id}");
+        graph.upsert_edge(Edge {
+            id: edge_id,
+            source_id: route_id,
+            target_id: handler_node_id,
+            edge_type: EdgeType::HandlesRoute,
+            confidence: 1.0,
+            reason: route.method.clone(),
+        });
+    }
 }
 
 /// Score entry-point functions (no callers or named `main`) with 1.0.
