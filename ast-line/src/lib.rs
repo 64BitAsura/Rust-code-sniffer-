@@ -23,17 +23,28 @@
 //!     index_dir: PathBuf::from(".ast-line"),
 //!     incremental: true,
 //!     verbose: false,
+//!     generate_embeddings: false,
+//!     no_parallel: false,
 //! };
 //!
 //! let (symbols, summary) = run_index(&opts).unwrap();
 //! println!("{} symbols found in {} files", summary.total_symbols, summary.total_files);
 //! ```
 
+pub mod augment;
+pub mod community;
+pub mod embeddings;
 pub mod error;
+pub mod group;
 pub mod graph;
 pub mod incremental;
 pub mod indexer;
+pub mod mcp;
 pub mod meta;
 pub mod parser;
+pub mod process;
+pub mod registry;
+pub mod search;
 pub mod server;
 pub mod symbols;
+pub mod wiki;

@@ -111,6 +111,32 @@ pub struct UnresolvedImport {
     pub is_glob: bool,
 }
 
+/// An unresolved struct/field access extracted from a source file.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UnresolvedAccess {
+    /// Name of the enclosing function performing the access.
+    pub accessor_fn: String,
+    /// Field name being accessed.
+    pub field_name: String,
+    /// `true` when the access is a write (assignment).
+    pub is_write: bool,
+    /// 1-based line number of the access.
+    pub line: usize,
+}
+
+/// An HTTP route annotation extracted from axum/actix-style handler macros.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RouteAnnotation {
+    /// HTTP method (GET, POST, etc.).
+    pub method: String,
+    /// Route path pattern (may be empty if not determinable statically).
+    pub path: String,
+    /// Name of the handler function.
+    pub handler_fn: String,
+    /// 1-based line number of the route registration.
+    pub line: usize,
+}
+
 /// All symbols extracted from a single source file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileSymbols {
@@ -123,8 +149,12 @@ pub struct FileSymbols {
     /// Unresolved call sites extracted from this file.
     pub calls: Vec<UnresolvedCall>,
     /// Unresolved import paths from `use` declarations in this file.
-    /// Uses `default` so that older cached serialised data (without this field)
-    /// still deserialises correctly.
     #[serde(default)]
     pub imports: Vec<UnresolvedImport>,
+    /// Unresolved field accesses extracted from this file.
+    #[serde(default)]
+    pub accesses: Vec<UnresolvedAccess>,
+    /// HTTP route annotations extracted from this file.
+    #[serde(default)]
+    pub routes: Vec<RouteAnnotation>,
 }

@@ -30,6 +30,9 @@ pub struct IndexMeta {
     pub graph_node_count: usize,
     /// Number of edges in the graph store.
     pub graph_edge_count: usize,
+    /// Number of symbol embeddings generated (0 if embeddings not enabled).
+    #[serde(default)]
+    pub embeddings_count: usize,
 }
 
 impl IndexMeta {
@@ -48,6 +51,7 @@ impl IndexMeta {
             symbol_count,
             graph_node_count,
             graph_edge_count,
+            embeddings_count: 0,
         }
     }
 

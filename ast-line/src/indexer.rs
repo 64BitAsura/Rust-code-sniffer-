@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use rayon::prelude::*;
 use walkdir::WalkDir;
 
 use crate::error::SnifferError;
@@ -27,6 +28,11 @@ pub struct IndexOptions {
     pub incremental: bool,
     /// When `true`, emit progress messages to stderr.
     pub verbose: bool,
+    /// When `true`, generate vector embeddings for symbols.
+    pub generate_embeddings: bool,
+    /// When `true`, disable parallel parsing (rayon) and fall back to
+    /// sequential mode. Useful for debugging or constrained environments.
+    pub no_parallel: bool,
 }
 
 /// Summary of an indexing run.
@@ -88,10 +94,6 @@ pub fn run_index(opts: &IndexOptions) -> Result<(Vec<FileSymbols>, IndexSummary)
     };
 
     // ── 6. Parse changed files ────────────────────────────────────────────────
-    let mut results: Vec<FileSymbols> = Vec::with_capacity(total_files);
-    let mut parsed_count = 0usize;
-    let mut skipped_count = 0usize;
-
     // Build a map from canonical path → raw content for changed files.
     let changed_set: std::collections::HashSet<String> = diff
         .changed
@@ -99,42 +101,79 @@ pub fn run_index(opts: &IndexOptions) -> Result<(Vec<FileSymbols>, IndexSummary)
         .map(|p| canonical_key(p, &opts.root))
         .collect();
 
+    // Separate file_data into three buckets:
+    //   (a) changed  — must (re-)parse
+    //   (b) cached   — reuse existing FileSymbols
+    //   (c) fallback — hash matched but no cache; treat as changed
+    let mut to_parse: Vec<(String, Vec<u8>, String)> = Vec::new(); // (path, content, hash)
+    let mut cached_results: Vec<FileSymbols> = Vec::new();
+    let mut skipped_count = 0usize;
+
     for (canonical, content) in &file_data {
         if changed_set.contains(canonical) {
-            // This file is new or modified — parse it.
             let hash = diff.hashes[canonical].clone();
-            let source = String::from_utf8_lossy(content);
-            if opts.verbose {
-                eprintln!("  parsing  {canonical}");
-            }
-            match parse_file(canonical, &source, hash) {
-                Ok(fs) => results.push(fs),
-                Err(e) => {
-                    eprintln!("  warning: skipping {canonical} — {e}");
-                }
-            }
-            parsed_count += 1;
+            to_parse.push((canonical.clone(), content.clone(), hash));
         } else if let Some(cached_fs) = cached.get(canonical) {
-            // Unchanged — reuse cached symbols.
             if opts.verbose {
                 eprintln!("  cached   {canonical}");
             }
-            results.push(cached_fs.clone());
+            cached_results.push(cached_fs.clone());
             skipped_count += 1;
         } else {
-            // No cache available even though hash matched (shouldn't happen in normal
-            // operation, but handle gracefully by re-parsing).
+            // No cache — re-parse.
             let hash = diff.hashes[canonical].clone();
-            let source = String::from_utf8_lossy(content);
-            if opts.verbose {
-                eprintln!("  reparse  {canonical} (no cache)");
-            }
-            if let Ok(fs) = parse_file(canonical, &source, hash) {
-                results.push(fs);
-            }
-            parsed_count += 1;
+            to_parse.push((canonical.clone(), content.clone(), hash));
         }
     }
+
+    let parsed_count = to_parse.len();
+
+    // Parse the changed files — in parallel unless --no-parallel was requested.
+    let mut newly_parsed: Vec<FileSymbols> = if opts.no_parallel {
+        // Sequential path (--no-parallel escape hatch).
+        to_parse
+            .iter()
+            .filter_map(|(canonical, content, hash)| {
+                let source = String::from_utf8_lossy(content);
+                if opts.verbose {
+                    eprintln!("  parsing  {canonical}");
+                }
+                match parse_file(canonical, &source, hash.clone()) {
+                    Ok(fs) => Some(fs),
+                    Err(e) => {
+                        eprintln!("  warning: skipping {canonical} — {e}");
+                        None
+                    }
+                }
+            })
+            .collect()
+    } else {
+        // Parallel path — rayon distributes work across the thread pool.
+        // Results may arrive in arbitrary order; we sort by path afterwards
+        // to ensure deterministic output.
+        let mut parsed: Vec<FileSymbols> = to_parse
+            .par_iter()
+            .filter_map(|(canonical, content, hash)| {
+                let source = String::from_utf8_lossy(content);
+                match parse_file(canonical, &source, hash.clone()) {
+                    Ok(fs) => Some(fs),
+                    Err(e) => {
+                        eprintln!("  warning: skipping {canonical} — {e}");
+                        None
+                    }
+                }
+            })
+            .collect();
+        // Restore deterministic ordering.
+        parsed.sort_by(|a, b| a.path.cmp(&b.path));
+        parsed
+    };
+
+    // Merge: cached first (already sorted from previous run), then newly parsed.
+    let mut results: Vec<FileSymbols> = cached_results;
+    results.append(&mut newly_parsed);
+    // Final sort to keep the overall list deterministic across runs.
+    results.sort_by(|a, b| a.path.cmp(&b.path));
 
     // ── 7. Purge stale entries from state ─────────────────────────────────────
     let current_keys: Vec<String> = file_data.iter().map(|(k, _)| k.clone()).collect();
@@ -191,8 +230,22 @@ pub fn run_index(opts: &IndexOptions) -> Result<(Vec<FileSymbols>, IndexSummary)
         resolve_imports(&mut graph, file_syms, &all_file_paths);
     }
 
+    // ── 9d. Resolve ACCESSES edges ────────────────────────────────────────────
+    for file_syms in &results {
+        resolve_accesses(&mut graph, file_syms, &name_index);
+    }
+
+    // ── 9e. Score entry points ────────────────────────────────────────────────
+    score_entry_points(&mut graph, &results);
+
     // Persist the updated graph.
     graph.save(&opts.index_dir)?;
+
+    let communities = crate::community::detect_communities(&graph);
+    let _ = crate::community::save_communities(&opts.index_dir, &communities);
+
+    let processes = crate::process::trace_processes(&graph, 8);
+    let _ = crate::process::save_processes(&opts.index_dir, &processes);
 
     let graph_nodes = graph.node_count();
     let graph_edges = graph.edge_count();
@@ -275,6 +328,7 @@ fn populate_graph(graph: &mut AdjacencyStore, file_syms: &FileSymbols) {
         file_path: String::new(),
         start_line: 0,
         end_line: 0,
+        entry_point_score: 0.0,
     });
 
     // ── Symbol nodes + DEFINES edges ──────────────────────────────────────────
@@ -297,6 +351,7 @@ fn populate_graph(graph: &mut AdjacencyStore, file_syms: &FileSymbols) {
             file_path: file_path.clone(),
             start_line: sym.start_line,
             end_line: sym.end_line,
+            entry_point_score: 0.0,
         });
 
         // File DEFINES every top-level symbol.
@@ -360,6 +415,7 @@ fn populate_graph(graph: &mut AdjacencyStore, file_syms: &FileSymbols) {
                     file_path: String::new(),
                     start_line: 0,
                     end_line: 0,
+                    entry_point_score: 0.0,
                 });
                 let edge_id = format!("{impl_id}--IMPLEMENTS-->{trait_node_id}");
                 graph.upsert_edge(Edge {
@@ -372,6 +428,100 @@ fn populate_graph(graph: &mut AdjacencyStore, file_syms: &FileSymbols) {
                 });
             }
         }
+    }
+
+    // ── METHOD_IMPLEMENTS edges for trait method implementations ──────────────
+    for (impl_id, impl_sym) in &sym_ids {
+        if impl_sym.kind == SymbolKind::TraitImpl {
+            if let Some(trait_name) = &impl_sym.trait_name {
+                for (fn_id, fn_sym) in &sym_ids {
+                    if fn_sym.kind != SymbolKind::Function { continue; }
+                    if fn_sym.start_line >= impl_sym.start_line && fn_sym.end_line <= impl_sym.end_line {
+                        let fn_name = &fn_sym.name;
+                        let method_node_id = format!("Function::{trait_name}::{fn_name}");
+                        graph.upsert_node(Node {
+                            id: method_node_id.clone(),
+                            label: NodeLabel::Function,
+                            name: fn_name.clone(),
+                            file_path: String::new(),
+                            start_line: 0,
+                            end_line: 0,
+                            entry_point_score: 0.0,
+                        });
+                        let concrete_method_id = format!("Function:{file_path}::{fn_name}");
+                        let edge_id = format!("{concrete_method_id}--METHOD_IMPLEMENTS-->{method_node_id}");
+                        graph.upsert_edge(Edge {
+                            id: edge_id,
+                            source_id: concrete_method_id,
+                            target_id: method_node_id,
+                            edge_type: EdgeType::MethodImplements,
+                            confidence: 1.0,
+                            reason: String::new(),
+                        });
+                        let _ = fn_id;
+                        let _ = impl_id;
+                    }
+                }
+            }
+        }
+    }
+
+    // ── Route nodes ───────────────────────────────────────────────────────────
+    emit_route_nodes(graph, file_syms);
+}
+
+/// Emit `Route` nodes and `HANDLES_ROUTE` edges for HTTP route annotations.
+fn emit_route_nodes(graph: &mut AdjacencyStore, file_syms: &FileSymbols) {
+    let file_path = &file_syms.path;
+    for route in &file_syms.routes {
+        let route_id = format!("Route:{file_path}::{}:{}", route.method, route.handler_fn);
+        graph.upsert_node(Node {
+            id: route_id.clone(),
+            label: NodeLabel::Route,
+            name: route.handler_fn.clone(),
+            file_path: file_path.clone(),
+            start_line: route.line,
+            end_line: route.line,
+            entry_point_score: 0.0,
+        });
+        let handler_node_id = format!("Function:{file_path}::{}", route.handler_fn);
+        let edge_id = format!("{route_id}--HANDLES_ROUTE-->{handler_node_id}");
+        graph.upsert_edge(Edge {
+            id: edge_id,
+            source_id: route_id,
+            target_id: handler_node_id,
+            edge_type: EdgeType::HandlesRoute,
+            confidence: 1.0,
+            reason: route.method.clone(),
+        });
+    }
+}
+
+/// Score entry-point functions (no callers or named `main`) with 1.0.
+fn score_entry_points(graph: &mut AdjacencyStore, _all_files: &[FileSymbols]) {
+    let edge_data: Vec<(EdgeType, String, String)> = graph
+        .edges()
+        .map(|e| (e.edge_type.clone(), e.source_id.clone(), e.target_id.clone()))
+        .collect();
+    let mut in_degree: HashMap<String, usize> = HashMap::new();
+    for (etype, _, target) in &edge_data {
+        if *etype == EdgeType::Calls {
+            *in_degree.entry(target.clone()).or_insert(0) += 1;
+        }
+    }
+
+    let candidate_nodes: Vec<crate::graph::Node> = graph
+        .nodes()
+        .filter(|n| {
+            n.label == NodeLabel::Function
+                && (*in_degree.get(&n.id).unwrap_or(&0) == 0 || n.name == "main")
+        })
+        .cloned()
+        .collect();
+
+    for mut node in candidate_nodes {
+        node.entry_point_score = 1.0;
+        graph.upsert_node(node);
     }
 }
 
@@ -424,6 +574,7 @@ fn build_name_index(all_files: &[FileSymbols]) -> HashMap<String, Vec<String>> {
                     | SymbolKind::Struct
                     | SymbolKind::Enum
                     | SymbolKind::Macro
+                    | SymbolKind::Field
             ) {
                 continue;
             }
@@ -522,10 +673,37 @@ fn resolve_imports(
     }
 }
 
+// ─── ACCESSES edge helpers ─────────────────────────────────────────────────────
+
+/// Emit `ACCESSES` edges from the field access sites in `file_syms` into `graph`.
+fn resolve_accesses(
+    graph: &mut AdjacencyStore,
+    file_syms: &FileSymbols,
+    name_index: &HashMap<String, Vec<String>>,
+) {
+    let file_path = &file_syms.path;
+    for access in &file_syms.accesses {
+        if access.accessor_fn.is_empty() { continue; }
+        let accessor_id = format!("Function:{file_path}::{}", access.accessor_fn);
+        let candidates = match name_index.get(&access.field_name) {
+            Some(c) if !c.is_empty() => c,
+            _ => continue,
+        };
+        for field_id in candidates {
+            let edge_id = format!("{accessor_id}--ACCESSES-->{field_id}:L{}", access.line);
+            graph.upsert_edge(Edge {
+                id: edge_id,
+                source_id: accessor_id.clone(),
+                target_id: field_id.clone(),
+                edge_type: EdgeType::Accesses,
+                confidence: 0.8,
+                reason: if access.is_write { "field-write".to_owned() } else { "field-read".to_owned() },
+            });
+        }
+    }
+}
+
 /// Resolve a single import path string to a canonical file path.
-///
-/// Handles `crate::`, `super::`, `self::` prefixes and bare `::` paths.
-/// Returns `None` when no matching file is found in `all_files`.
 fn resolve_import_path(
     current_file: &str,
     raw_path: &str,
