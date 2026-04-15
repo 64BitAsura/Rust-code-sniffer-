@@ -39,6 +39,7 @@ pub mod mcp;
 pub mod meta;
 pub mod parser;
 pub mod process;
+pub mod registry;
 pub mod search;
 pub mod server;
 pub mod symbols;

@@ -50,6 +50,7 @@ pub fn list_tools() -> Vec<Value> {
         serde_json::json!({"name":"route_map","description":"List all HTTP routes.","inputSchema":{"type":"object","properties":{}}}),
         serde_json::json!({"name":"shape_check","description":"Check route handler signatures.","inputSchema":{"type":"object","properties":{}}}),
         serde_json::json!({"name":"api_impact","description":"Blast radius of changing a route.","inputSchema":{"type":"object","properties":{"route":{"type":"string"}},"required":["route"]}}),
+        serde_json::json!({"name":"list_repos","description":"List registered repositories.","inputSchema":{"type":"object","properties":{}}}),
     ]
 }
 
@@ -64,6 +65,7 @@ pub fn call_tool(name: &str, params: Value, index_dir: &PathBuf) -> Result<Strin
         "route_map" => tool_route_map(index_dir),
         "shape_check" => tool_shape_check(index_dir),
         "api_impact" => tool_api_impact(params, index_dir),
+        "list_repos" => tool_list_repos(index_dir),
         _ => Err(format!("Unknown tool: {name}")),
     }
 }
@@ -297,4 +299,10 @@ fn tool_shape_check(index_dir: &PathBuf) -> Result<String, String> {
 fn tool_api_impact(params: Value, index_dir: &PathBuf) -> Result<String, String> {
     let route = params["route"].as_str().unwrap_or("").to_owned();
     tool_impact(serde_json::json!({"target":route,"direction":"downstream","depth":5}), index_dir)
+}
+
+fn tool_list_repos(index_dir: &PathBuf) -> Result<String, String> {
+    let registry = crate::registry::RepoRegistry::load(index_dir);
+    let repos: Vec<_> = registry.list().iter().map(|r| serde_json::json!({"name":r.name,"root":r.root,"index_dir":r.index_dir,"description":r.description})).collect();
+    Ok(serde_json::json!({"repos":repos}).to_string())
 }
