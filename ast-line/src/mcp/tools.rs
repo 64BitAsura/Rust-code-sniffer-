@@ -46,6 +46,7 @@ pub fn list_tools() -> Vec<Value> {
         }),
         serde_json::json!({"name":"detect_changes","description":"Map git diff to affected symbols.","inputSchema":{"type":"object","properties":{"scope":{"type":"string","enum":["staged","all","compare"],"default":"staged"},"base_ref":{"type":"string"}}}}),
         serde_json::json!({"name":"rename","description":"Graph-aware multi-file rename with dry-run.","inputSchema":{"type":"object","properties":{"symbol_name":{"type":"string"},"new_name":{"type":"string"},"dry_run":{"type":"boolean","default":true}},"required":["symbol_name","new_name"]}}),
+        serde_json::json!({"name":"cypher","description":"Raw graph query execution.","inputSchema":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}}),
     ]
 }
 
@@ -56,6 +57,7 @@ pub fn call_tool(name: &str, params: Value, index_dir: &PathBuf) -> Result<Strin
         "impact" => tool_impact(params, index_dir),
         "detect_changes" => tool_detect_changes(params, index_dir),
         "rename" => tool_rename(params, index_dir),
+        "cypher" => tool_cypher(params, index_dir),
         _ => Err(format!("Unknown tool: {name}")),
     }
 }
@@ -245,4 +247,25 @@ fn tool_rename(params: Value, index_dir: &PathBuf) -> Result<String, String> {
         .map(|n| serde_json::json!({"id":n.id,"file_path":n.file_path,"start_line":n.start_line})).collect();
     let affected_edges = graph.edges().filter(|e| e.source_id.contains(&old_name) || e.target_id.contains(&old_name)).count();
     Ok(serde_json::json!({"old_name":old_name,"new_name":new_name,"dry_run":dry_run,"affected_nodes":affected_nodes,"affected_edges":affected_edges,"message":if dry_run{"Dry run complete. Use dry_run: false to apply."}else{"Rename applied to graph index."}}).to_string())
+}
+
+fn tool_cypher(params: Value, index_dir: &PathBuf) -> Result<String, String> {
+    let query = params["query"].as_str().unwrap_or("").to_owned();
+    let graph = load_graph(index_dir)?;
+    let q = query.to_uppercase();
+    if q.contains("MATCH") && q.contains("RETURN") {
+        let label_filter = query.find('(').and_then(|s| query[s+1..].find(')').map(|e| {
+            let inner = &query[s+1..s+1+e];
+            inner.find(':').map(|c| inner[c+1..].trim().to_owned())
+        })).flatten();
+        let nodes: Vec<_> = graph.nodes()
+            .filter(|n| label_filter.as_deref().map(|l| n.label.to_string().eq_ignore_ascii_case(l)).unwrap_or(true))
+            .take(100)
+            .map(|n| serde_json::json!({"id":n.id,"label":n.label.to_string(),"name":n.name,"file_path":n.file_path}))
+            .collect();
+        let count = nodes.len();
+        Ok(serde_json::json!({"query":query,"results":nodes,"count":count}).to_string())
+    } else {
+        Ok(serde_json::json!({"query":query,"error":"Only simple MATCH...RETURN queries are supported"}).to_string())
+    }
 }
