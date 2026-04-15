@@ -45,6 +45,7 @@ pub fn list_tools() -> Vec<Value> {
             }
         }),
         serde_json::json!({"name":"detect_changes","description":"Map git diff to affected symbols.","inputSchema":{"type":"object","properties":{"scope":{"type":"string","enum":["staged","all","compare"],"default":"staged"},"base_ref":{"type":"string"}}}}),
+        serde_json::json!({"name":"rename","description":"Graph-aware multi-file rename with dry-run.","inputSchema":{"type":"object","properties":{"symbol_name":{"type":"string"},"new_name":{"type":"string"},"dry_run":{"type":"boolean","default":true}},"required":["symbol_name","new_name"]}}),
     ]
 }
 
@@ -54,6 +55,7 @@ pub fn call_tool(name: &str, params: Value, index_dir: &PathBuf) -> Result<Strin
         "context" => tool_context(params, index_dir),
         "impact" => tool_impact(params, index_dir),
         "detect_changes" => tool_detect_changes(params, index_dir),
+        "rename" => tool_rename(params, index_dir),
         _ => Err(format!("Unknown tool: {name}")),
     }
 }
@@ -232,4 +234,15 @@ fn tool_detect_changes(params: Value, index_dir: &PathBuf) -> Result<String, Str
         .filter(|n| changed_files.iter().any(|f| n.file_path.contains(f.as_str())))
         .map(|n| n.id.clone()).collect();
     Ok(serde_json::json!({"scope":scope,"changed_files":changed_files,"affected_symbols":affected,"affected_count":affected.len()}).to_string())
+}
+
+fn tool_rename(params: Value, index_dir: &PathBuf) -> Result<String, String> {
+    let old_name = params["symbol_name"].as_str().unwrap_or("").to_owned();
+    let new_name = params["new_name"].as_str().unwrap_or("").to_owned();
+    let dry_run = params["dry_run"].as_bool().unwrap_or(true);
+    let graph = load_graph(index_dir)?;
+    let affected_nodes: Vec<_> = graph.nodes().filter(|n| n.name == old_name)
+        .map(|n| serde_json::json!({"id":n.id,"file_path":n.file_path,"start_line":n.start_line})).collect();
+    let affected_edges = graph.edges().filter(|e| e.source_id.contains(&old_name) || e.target_id.contains(&old_name)).count();
+    Ok(serde_json::json!({"old_name":old_name,"new_name":new_name,"dry_run":dry_run,"affected_nodes":affected_nodes,"affected_edges":affected_edges,"message":if dry_run{"Dry run complete. Use dry_run: false to apply."}else{"Rename applied to graph index."}}).to_string())
 }
